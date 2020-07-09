@@ -14,3 +14,4 @@
 * 论文：Character-Level Language Modeling with Deeper Self-Attention里的三种辅助损失函数，没太想明白原理或推导过程是什么，是否可以理解为是添加的损失函数正则项。
 
 * Python的Argparse模块以前没用过，也没通过该模块执行命令行代码，一开始不会运行学长代码，现在也在学习这一块。
+* 昨晚检查模型，decoder的sequence mask应该没问题，暂时还没找到问题出在哪，我自己电脑迭代一次都很慢，租用网络服务器有点麻烦。今天下午再检查一遍模型然后租服务器调试。
