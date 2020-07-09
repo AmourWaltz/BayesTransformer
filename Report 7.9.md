@@ -8,7 +8,7 @@
 
 ## Transformer
 
-* In this week, I mainly learned the Transformer language model based on the attention mechanism. After learning relevant paper, *Attention is all your need,* I implement a basic Transformer language model using Python.
+* In this week, I mainly learned the Transformer language model based on attention mechanism. After learning relevant paper, *Attention is all your need,* I implement a basic Transformer language model using Python.
 * Corpus Making: PTB dataset is used to obtain corpus, which includes spliting sentences into words, establishing index for each word and converting snetences into index sequences. Then they are divided into training set, validation set and testing set. 
 * Transformer Model: *Attention is all your need*  is referred to model, including Encoder, Decoder, Self-Attention, Positional Embedding, Masks and so on.
 * Training: Renting an online server to complete training process.
