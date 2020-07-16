@@ -29,16 +29,19 @@ class ScaledDotProductAttention(nn.Module):
         :return: context tensor as z and attetention tensor
         """
         attention = torch.bmm(query, key.transpose(1, 2))
+        print(attention)
+        # print(attention.size(), attn_mask.size())
         if scale:
             attention = attention * scale
             pass
         pass
 
         if attn_mask is not None:
-            attention = attention.masked_fill_(attn_mask, -np.inf)
+            attention = attention.masked_fill_(attn_mask, -1e9)
             pass
         pass
 
+        print(attention)
         attention = self.softmax(attention)
         attention = self.dropout(attention)
         context = torch.bmm(attention, value)
@@ -120,7 +123,14 @@ def padding_mask(seq_k, seq_q):
     """
     len_q = seq_q.size(1)
     pad_mask = seq_k.eq(0)
+    # print(pad_mask.size(), pad_mask)
     pad_mask = pad_mask.unsqueeze(1).expand(-1, len_q, -1)
+
+    # Test on 7.11. reshape
+    # batch_size = seq_k.size(0)
+    # pad_mask = pad_mask.repeat(len_q, 1)
+    # pad_mask = pad_mask.view(batch_size, len_q, -1)
+    # print(pad_mask.size(), pad_mask)
 
     return pad_mask
 
@@ -132,9 +142,25 @@ def sequence_mask(seq):
     :return: mask shape [B, L, L]
     """
     batch_size, seq_len = seq.size()
-    mask = torch.triu(torch.ones((seq_len, seq_len), dtype=torch.uint8), diagonal=1)
+    # mask = torch.zeros((seq_len, seq_len))
+    mask = torch.triu(torch.ones((seq_len, seq_len), dtype=torch.uint8), diagonal=0)
+    # print(mask.size(), mask)
     mask = mask.unsqueeze(0).expand(batch_size, -1, -1)
+    # print(mask.size(), mask)
+    # mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
 
+    return mask
+
+
+def generate_square_subsequent_mask(seq):
+    """
+    Generate a square mask for the sequence. The masked positions are filled with float('-inf').
+    Unmasked positions are filled with float(0.0).
+    """
+    batch_size, seq_len = seq.size()
+    mask = (torch.triu(torch.ones(seq_len, seq_len)) == 1).transpose(0, 1)
+    print(mask)
+    mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
     return mask
 
 
@@ -240,7 +266,7 @@ class EncoderLayer(nn.Module):
     """
     Core encoder is a stack of N layers.
     """
-    def __init__(self, model_dim=512, num_heads=8, ffn_dim=2018, dropout=0.0):
+    def __init__(self, model_dim=512, num_heads=8, ffn_dim=2048, dropout=0.0):
         super(EncoderLayer, self).__init__()
         self.attention = MultiHeadAttention(model_dim, num_heads, dropout)
         self.feed_forward = PositionalWiseFeedForward(model_dim, ffn_dim, dropout)
@@ -268,13 +294,14 @@ class Encoder(nn.Module):
         self.pos_embedding = PositionalEncoding(model_dim, max_seq_len)
 
     def forward(self, inputs, inputs_len):
-        # size(1) of word embedding and positional embedding is model_dim
+        # size(1) of word embedding and positional embedding is model_dim.
         # inputs_clone = inputs.clone()
         inputs = inputs.clone().detach().long()
         # print(inputs.size())
         output = self.seq_embedding(inputs)
         # print(output.size(), inputs.size())
         output += self.pos_embedding(inputs_len)
+        print("encoder")
         self_attention_mask = padding_mask(inputs, inputs)
 
         attentions = []
@@ -287,7 +314,7 @@ class Encoder(nn.Module):
         return output, attentions
 
 
-# One layer of Decoder
+# One layer of Decoder.
 class DecoderLayer(nn.Module):
     """
     Core decoder is a stack of N layers.
@@ -324,16 +351,30 @@ class Decoder(nn.Module):
         inputs = inputs.clone().detach().long()
         output = self.seq_embedding(inputs)
         output += self.pos_embedding(inputs_len)
+        print("decoder")
         self_attention_padding_mask = padding_mask(inputs, inputs)
+        # Test new seq_mask func on 7.10.
+        # seq_mask = generate_square_subsequent_mask(inputs)
         seq_mask = sequence_mask(inputs)
+
+        # if torch.cuda.is_available():
+        #     self_attn_mask = torch.gt(seq_mask.cuda(), 0)
+        #     pass
+        # else:
+        #     self_attn_mask = torch.gt(seq_mask, 0)
+        #     pass
+        # pass
+
+        # print(seq_mask, self_attention_padding_mask)
         if torch.cuda.is_available():
-            self_attn_mask = torch.gt((self_attention_padding_mask.cuda() + seq_mask.cuda()), 0)
+            self_attn_mask = torch.gt(self_attention_padding_mask.cuda() + seq_mask.cuda(), 0)
             pass
         else:
-            self_attn_mask = torch.gt((self_attention_padding_mask + seq_mask), 0)
+            self_attn_mask = torch.gt(self_attention_padding_mask + seq_mask, 0)
             pass
         pass
 
+        # print(self_attn_mask)
         self_attentions = []
         context_attentions = []
         for decoder in self.decoder_layers:
@@ -357,6 +398,7 @@ class Transformer(nn.Module):
         self.softmax = nn.Softmax(dim=2)
 
     def forward(self, src_seq, src_len, tgt_seq, tgt_len):
+        # print("model")
         context_attn_mask = padding_mask(tgt_seq, src_seq)
         output, enc_self_attn = self.encoder(src_seq, src_len)
         output, dec_self_attn, ctx_attn = self.decoder(tgt_seq, tgt_len, output, context_attn_mask)

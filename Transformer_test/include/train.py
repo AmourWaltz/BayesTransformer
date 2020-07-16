@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as func
 import torch.optim as optim
 import torch.utils.data
+from model_test import TransformerModel
 from model import Transformer
 from model import ScheduledOptim
 
@@ -20,11 +21,14 @@ PAD = 0
 epochs = 8
 log_path = "../data/"
 log_flag = True
+transformer_type = True
+smoothing_flag = False
 
 
 # Apply label smoothing if needed.
 def cal_performance(pred, gold, smoothing=False):
-    # print(gold.size())
+    # gold.size()  batch * sen_len
+    # print(gold.size(), pred.size())
     gold = gold.contiguous().view(-1)
     voc_size = pred.size()[-1]
     # print(voc_size)
@@ -47,7 +51,6 @@ def cal_loss(pred, gold, smoothing):
     if smoothing:
         eps = 0.1
         n_class = pred.size(1)
-
         one_hot = torch.zeros_like(pred).scatter(1, gold.view(-1, 1), 1)
 
         # torch.cuda.available, cuda cannot convert Tensor to numpy()
@@ -74,8 +77,10 @@ def cal_loss(pred, gold, smoothing):
         loss = loss.masked_select(non_pad_mask).sum()  # average later
         pass
     else:
-        print(pred.size(), gold.size())
-        loss = func.cross_entropy(pred, gold, ignore_index=PAD, reduction='sum')
+        # print(pred.size(), gold.size())
+        # one_hot = torch.zeros_like(pred).scatter(1, gold.view(-1, 1), 1).long()
+        # print(one_hot.size(), one_hot)
+        loss = func.cross_entropy(pred, gold, ignore_index=0)
         pass
     pass
 
@@ -92,19 +97,29 @@ def train_epoch(model, training_data, optimizer):
     for loop_i, (inputs, targets, sent_lens) in enumerate(training_data):
         # prepare data
         # print("targets size: ", targets.size())
-        if loop_i % 1000 == 0:
-            print("train_loop: ", loop_i)
-            pass
-        pass
+
         tar_rel = targets.t()
         tar_rel = tar_rel[:, 1:]
 
         optimizer.zero_grad()
-        pred, _, _, _ = model(inputs.t(), sent_lens, targets.t(), sent_lens)
+
+        if transformer_type is True:
+            pred, _, _, _ = model(inputs.t(), sent_lens, targets.t(), sent_lens)
+            pass
+        else:
+            pred = model(inputs.t(), targets.t())
+            pass
+        pass
 
         # backward
-        loss, n_correct = cal_performance(pred[:, 1:, :], tar_rel, smoothing=True)
+        loss, n_correct = cal_performance(pred[:, 1:, :], tar_rel, smoothing=smoothing_flag)
         loss.backward()
+
+        if loop_i % 10 == 0:
+            print("train_loop: ", loop_i)
+            print("loss: ", loss)
+            pass
+        pass
 
         # update parameters
         optimizer.step_and_update_lr()
@@ -139,8 +154,15 @@ def eval_epoch(model, valid_data):
             tar_rel = tar_rel[:, 1:]
 
             # forward
-            pred, _, _, _ = model(inputs.t(), sent_lens, targets.t(), sent_lens)
-            loss, n_correct = cal_performance(pred[:, 1:, :], tar_rel, smoothing=True)
+            if transformer_type is False:
+                pred = model(inputs.t(), targets.t())
+                pass
+            else:
+                pred, _, _, _ = model(inputs.t(), sent_lens, targets.t(), sent_lens)
+                pass
+            pass
+
+            loss, n_correct = cal_performance(pred[:, 1:, :], tar_rel, smoothing=smoothing_flag)
 
             # note keeping
             total_loss += loss.item()
@@ -221,7 +243,7 @@ def test(model, test_data):
                 # transpose targets dataset and cut first line
                 gold = test_targets.t()[:, 1:]
                 pred, _, _, _ = model(test_inputs.t(), sent_lens, test_targets.t(), sent_lens)
-                loss, n_correct = cal_performance(pred[:, 1:, :], test_targets.t()[:, 1:], smoothing=True)
+                loss, n_correct = cal_performance(pred[:, 1:, :], test_targets.t()[:, 1:], smoothing=smoothing_flag)
                 total_loss += loss.item()
                 non_pad_mask = gold.ne(PAD)
                 words = non_pad_mask.sum().item()
@@ -246,6 +268,8 @@ def test(model, test_data):
 
 
 def main():
+    print("Time:", time.strftime('%Y-%m-%d %H:%M:%S'))
+
     # Preparing DataLoader.
     corpus = Corpus('../data/ptb', train_batch_size=8, valid_batch_size=16, test_batch_size=1)
     print("[Info] train length: ", len(corpus.train_data), "\n",
@@ -257,12 +281,22 @@ def main():
 
     vocab_size = len(corpus.voc)
     max_length = corpus.max_length
+    print("[Parameters]")
     print("max_length: ", max_length)
+    print("Transformer_type is mine. ", transformer_type)
+    print("Smoothing flag.", smoothing_flag)
     num_layers, model_dim, num_heads, ffn_dim, dropout = 6, 512, 8, 2048, 0.2
-    transformer = Transformer(src_vocab_size=vocab_size, src_max_len=max_length,
-                              tgt_vocab_size=vocab_size, tgt_max_len=max_length,
-                              num_layers=num_layers, model_dim=model_dim, num_heads=num_heads,
-                              ffn_dim=ffn_dim, dropout=dropout).to(device)
+
+    if transformer_type is True:
+        transformer = Transformer(src_vocab_size=vocab_size, src_max_len=max_length,
+                                  tgt_vocab_size=vocab_size, tgt_max_len=max_length,
+                                  num_layers=num_layers, model_dim=model_dim, num_heads=num_heads,
+                                  ffn_dim=ffn_dim, dropout=dropout).to(device)
+        pass
+    else:
+        transformer = TransformerModel(vocab_size, vocab_size)
+        pass
+    pass
 
     optimizer = ScheduledOptim(optim.Adam(
         filter(lambda x: x.requires_grad, transformer.parameters()),
