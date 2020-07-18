@@ -8,7 +8,7 @@ Preprocessing of input sequences has two steps, $Mask$ and $Embedding$. The main
 
 The flowchart of this project is as follows.
 
-<img src="/Users/collcertaye/WorkSpace/speech_recognition/Reports/transformer_modeling.png" alt="transformer_modeling" style="zoom:50%;" />
+<img src="/Users/collcertaye/WorkSpace/speech_recognition/Transformer_testing/TransformerLM/include/data/transformer_modeling.png" alt="transformer_modeling" style="zoom:50%;" />
 
 ## Requirements
 
