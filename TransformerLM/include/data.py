@@ -189,7 +189,7 @@ class Corpus(object):
 
         # max_length: sentences maximum length to align.
         self.max_length = max(max(train_lens), max(valid_lens), max(test_lens))
-        # print(max_length)
+        # print(self.voc.id2word(9991))
         self.train_loader = data.DataLoader(self.train_data, batch_size=train_batch_size,
                                             shuffle=True, num_workers=0, collate_fn=collate_fn, drop_last=False)
         self.valid_loader = data.DataLoader(self.valid_data, batch_size=valid_batch_size,

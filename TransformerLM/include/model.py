@@ -7,6 +7,13 @@ import torch.nn.functional as func
 
 # Scaled dot-product attention mechanism.
 class ScaledDotProductAttention(nn.Module):
+    """
+    An attention function can be described as a query and a set of key-value pairs to an output,
+    where the query, keys, values, and output are all vectors.
+    The output is computed as a weighted sum of the values,
+    where the weight assigned to each value is computed
+    by a compatibility of the query with the corresponding key.
+    """
     def __init__(self, attention_dropout=0.0):
         super(ScaledDotProductAttention, self).__init__()
         self.dropout = nn.Dropout(attention_dropout)
@@ -44,6 +51,12 @@ class ScaledDotProductAttention(nn.Module):
 
 # Multi-head attention architecture.
 class MultiHeadAttention(nn.Module):
+    """
+    We found it beneﬁcial to linearly project the queries, keys and values h times with different,
+    learned linear projections to d_k , d_k and d_v dimensions, respectively.
+    We then perform the attention function in parallel, yielding d_v-dimensional output values.
+    These are concatenated and once again projected, resulting in the ﬁnal values,
+    """
     def __init__(self, model_dim=512, num_heads=8, dropout=0.0):
         super(MultiHeadAttention, self).__init__()
         self.dim_per_head = model_dim // num_heads
@@ -130,17 +143,22 @@ def sequence_mask(seq):
     """
     batch_size, seq_len = seq.size()
     # mask = torch.zeros((seq_len, seq_len))
-    mask = torch.triu(torch.ones((seq_len, seq_len), dtype=torch.uint8), diagonal=0)
-    # print(mask.size(), mask)
+    mask = torch.triu(torch.ones((seq_len, seq_len), dtype=torch.uint8), diagonal=1)
     mask = mask.unsqueeze(0).expand(batch_size, -1, -1)
-    # print(mask.size(), mask)
-    # mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
 
     return mask
 
 
 # Compute the positional encodings once in trigonometric space.
 class PositionalEncoding(nn.Module):
+    """
+    Where pos is the position and i is the dimension.
+    That is, each dimension of the positional encoding corresponds to a sinusoid.
+    The wavelengths form a geometric progression from 2π to 10000 · 2π.
+    We chose this function because we hypothesized
+    it would allow the model to easily learn to attend by relative positions,
+    since for any ﬁxed offset k, PE pos+k can be represented as a linear function of PE pos .
+    """
     def __init__(self, d_model, max_seq_len):
         """
         :param d_model: sclar, model dimension: 512 in Attention Is All You Need
@@ -169,9 +187,6 @@ class PositionalEncoding(nn.Module):
         :return: position embeddings of the sequence with alignment
         """
         # find out the max_length of sequences
-        # print(input_len)
-        # for length in input_len:
-        #     print(length)
         input_len = input_len.clone().detach()
         max_len = torch.max(input_len)
         # add 0 behind original sequences to align and avoid 1st line of PAD(0)
@@ -195,6 +210,12 @@ class PositionalEncoding(nn.Module):
 
 # Implements FFN equation.
 class PositionalWiseFeedForward(nn.Module):
+    """
+    Two linear transformer and one ReLU. In addition to attention sub-layers,
+    each of the layers in our encoder and decoder contains a fully connected feed-forward network,
+    which is applied to each position separately and identically.
+    This consists of two linear transformations with a ReLU activation in between.
+    """
     def __init__(self, model_dim=512, ffn_dim=2048, dropout=0.0):
         super(PositionalWiseFeedForward, self).__init__()
         self.w1 = nn.Conv1d(model_dim, ffn_dim, 1)
@@ -262,15 +283,6 @@ class MainLayer(nn.Module):
         embeddings += self.pos_embedding(inputs_len)
         pad_mask = padding_mask(inputs, inputs)
         seq_mask = sequence_mask(inputs)
-        # print("embeddings size: ", embeddings.size())
-
-        # if torch.cuda.is_available():
-        #     self_attn_mask = torch.gt(seq_mask.cuda(), 0)
-        #     pass
-        # else:
-        #     self_attn_mask = torch.gt(seq_mask, 0)
-        #     pass
-        # pass
 
         # print(seq_mask, self_attention_padding_mask)
         if torch.cuda.is_available():
@@ -300,13 +312,10 @@ class Modeling(nn.Module):
         super(Modeling, self).__init__()
         self.layers = MainLayer(src_vocab_size, src_max_len, num_layers, model_dim, num_heads, ffn_dim, dropout)
         self.linear = nn.Linear(model_dim, src_vocab_size, bias=False)
-        self.softmax = nn.Softmax(dim=2)
 
     def forward(self, input_seq, input_len):
-        # input_seq.size(): Batch × Length
         output, self_attention = self.layers(input_seq, input_len)
         output = self.linear(output)
-        output = self.softmax(output)
 
         return output, self_attention
 
