@@ -1,14 +1,14 @@
-# Transformer_testing
+# TransformerLM
 
 Inplementation for [Language Modeling with Deep Transformers](https://arxiv.org/pdf/1905.04226.pdf) (INTERSPEECH 2019) as I understood and relevant experiments on PTB. 
 
 Given the inputs of word sequences, we can predict the next word in output layer. 
 
-Preprocessing of input sequences has two steps, $Mask$ and $Embedding$. The main part is a stack of two layers, and each layer has as a two components: $self-attention$ and $feed-forward$ modules. 
+Preprocessing of input sequences has two steps, $Mask$ and $Embedding$. The main part is a stack of two layers, and each layer has as a two components: *self-attention* and *feed-forward* modules. 
 
 The flowchart of this project is as follows.
 
-<img src="TransformerLM/include/data/transformer_modeling.png" alt="transformer_modeling" style="zoom:50%;" />
+<img src="TransformerLM/include/data/transformer_modeling.png" alt="transformer_modeling" style="zoom:20%;" />
 
 ## Requirements
 
@@ -53,5 +53,9 @@ Python train.py -- cuda -1
 ## Notes
 
 - I'm going to build subword-level language model.
+<<<<<<< HEAD
 - The *n-gram language model​* will be established soon.
+=======
+- The *n-gram language model* will be established soon.
+>>>>>>> c0a1f48ec8bebcf7267197f41682f8a5d72d447a
 
