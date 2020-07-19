@@ -20,8 +20,8 @@ pass
 
 PAD = 0
 epochs = 20
-log_path = "data/"
 log_flag = True
+log_file = 'data/log.log'
 
 criterion = nn.CrossEntropyLoss()
 
@@ -183,12 +183,8 @@ def val_epoch(model, valid_data):
 # Training process.
 def train_process(model, training_data, validation_data, optimizer, smooth_flag):
     model.to(device)
-    log_file = log_path + 'log.log'
-
-    print('[Info] Results will be written to file: {}'.format(log_file))
-
-    with open(log_file, 'w') as log:
-        log.write('Every second should be created. {}\n'.format(time.strftime('%Y-%m-%d %H:%M:%S')))
+    if log_flag:
+        print('[Info] Testing performance will be written to file: {}'.format(log_file))
         pass
     pass
 
@@ -249,8 +245,10 @@ def test_process(model, test_data):
     total_loss = 0
     test_words = 0
     test_correct = 0
-    log_file = log_path + 'log.log'
-    print('[Info] Testing performance will be written to file: {}'.format(log_file))
+    if log_flag:
+        print('[Info] Testing performance will be written to file: {}'.format(log_file))
+        pass
+    pass
 
     for epoch_i in range(epochs):
         with torch.no_grad():
@@ -289,6 +287,19 @@ def main():
 
     print("[Para]  num_layers:", num_layers, ", model_dim:", model_dim, ", num_heads:", num_heads,
           ", ffn_dim:", ffn_dim, ", dropout:", dropout, ", learning_rate:", lr, ", smoothing_flag:", smooth_flag)
+
+    if log_flag:
+        with open(log_file, 'w') as log:
+            log.write('[ Time: ] \n')
+            log.write('Every second should be created. {}\n'.format(time.strftime('%Y-%m-%d %H:%M:%S')))
+            log.write('[ Params: ]\n')
+            log.write('num_layers: {num_layers:}, model_dim: {model_dim:}, num_heads: {num_heads:}, '
+                      'ffn_dim: {ffn_dim:}, dropout: {dropout:}, lr: {lr:}\n'
+                      .format(num_layers=num_layers, model_dim=model_dim, num_heads=num_heads,
+                              ffn_dim=ffn_dim, dropout=dropout, lr=lr))
+            pass
+        pass
+    pass
 
     transformer = Modeling(src_vocab_size=vocab_size, src_max_len=max_length,
                            num_layers=num_layers, model_dim=model_dim, num_heads=num_heads,

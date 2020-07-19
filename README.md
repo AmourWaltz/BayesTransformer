@@ -53,5 +53,5 @@ Python train.py -- cuda -1
 ## Notes
 
 - I'm going to build subword-level language model.
-- The $n-gram~language~model$ will be established soon.
+- The *n-gram language model​* will be established soon.
 
