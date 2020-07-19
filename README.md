@@ -1,4 +1,4 @@
-# Transformer_testing
+# TransformerLM
 
 Inplementation for [Language Modeling with Deep Transformers](https://arxiv.org/pdf/1905.04226.pdf) (INTERSPEECH 2019) as I understood and relevant experiments on PTB. 
 
@@ -53,5 +53,5 @@ Python train.py -- cuda -1
 ## Notes
 
 - I'm going to build subword-level language model.
-- The $n-gram~language~model$ will be established soon.
+- The *n-gram language model* will be established soon.
 
