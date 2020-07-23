@@ -1,4 +1,3 @@
-import math
 import numpy as np
 import torch
 import torch.nn as nn
@@ -114,27 +113,6 @@ class MultiHeadAttention(nn.Module):
         return output, attention
 
 
-# To align sequences with different lengths.
-def padding_mask(seq_k, seq_q):
-    """
-    :param seq_k: shape [B, L]
-    :param seq_q: shape [B, L]
-    :return: pad_mask shape [B, L, L]
-    """
-    len_q = seq_q.size(1)
-    pad_mask = seq_k.eq(0)
-    # print(pad_mask.size(), pad_mask)
-    pad_mask = pad_mask.unsqueeze(1).expand(-1, len_q, -1)
-
-    # Test on 7.11. reshape
-    # batch_size = seq_k.size(0)
-    # pad_mask = pad_mask.repeat(len_q, 1)
-    # pad_mask = pad_mask.view(batch_size, len_q, -1)
-    # print(pad_mask.size(), pad_mask)
-
-    return pad_mask
-
-
 # To make latter word invisible for present decoder.
 def sequence_mask(seq):
     """
@@ -225,22 +203,12 @@ class PositionalWiseFeedForward(nn.Module):
 
     def forward(self, x):
         output = x.transpose(1, 2)
-        output = self.w2(func.relu(self.w1(output)))
+        output = self.w2(func.relu(self.w1(output), inplace=True))
         output = self.dropout(output.transpose(1, 2))
         # add residual and norm layer
         output = self.layer_norm(x + output)
 
         return output
-
-
-class Embeddings(nn.Module):
-    def __init__(self, d_model, vocab):
-        super(Embeddings, self).__init__()
-        self.lut = nn.Embedding(vocab, d_model)
-        self.d_model = d_model
-
-    def forward(self, x):
-        return self.lut(x) * math.sqrt(self.d_model)
 
 
 # One layer of Decoder.
@@ -281,15 +249,14 @@ class MainLayer(nn.Module):
         inputs = inputs.clone().detach().long()
         embeddings = self.seq_embedding(inputs)
         embeddings += self.pos_embedding(inputs_len)
-        pad_mask = padding_mask(inputs, inputs)
         seq_mask = sequence_mask(inputs)
 
         # print(seq_mask, self_attention_padding_mask)
         if torch.cuda.is_available():
-            attn_mask = torch.gt(pad_mask.cuda() + seq_mask.cuda(), 0)
+            attn_mask = torch.gt(seq_mask.cuda(), 0)
             pass
         else:
-            attn_mask = torch.gt(pad_mask + seq_mask, 0)
+            attn_mask = torch.gt(seq_mask, 0)
             pass
         pass
 

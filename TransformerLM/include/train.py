@@ -130,7 +130,7 @@ class ScheduledOptim(nn.Module):
 
 
 # Epoch operation in training phase.
-def train_epoch(model, training_data, optimizer, smooth_flag):
+def train_epoch(model, training_data, optimizer, smoothing):
     model.train()
     total_loss = 0
     total_words = 0
@@ -141,7 +141,7 @@ def train_epoch(model, training_data, optimizer, smooth_flag):
         optimizer.zero_grad()
         pred, _ = model(inputs.t(), sent_lens)
         word_number, correct_words = accu_evaluation(pred[:, 1:, :], targets.t()[:, 1:])
-        loss = loss_calculation(pred, targets, sent_lens, smoothing=smooth_flag)
+        loss = loss_calculation(pred, targets, sent_lens, smoothing=smoothing)
         loss.backward()
 
         # update parameters
@@ -159,7 +159,6 @@ def train_epoch(model, training_data, optimizer, smooth_flag):
             # print("pred output: ", pred)
             # print("pred: ", pred.argmax(dim=2))
             # print("targets: ", targets.t())
-            # print("pred, targets: ", pred_packed, pred_packed.argmax(dim=1), targets_packed)
             pass
         pass
     pass
@@ -170,10 +169,10 @@ def train_epoch(model, training_data, optimizer, smooth_flag):
 
 
 # Epoch operation in evaluation phase.
-def val_epoch(model, valid_data):
+def val_epoch(model, valid_data, smoothing):
     model.eval()
     with torch.no_grad():
-        val_correct, val_words, total_loss = val_test_iteration(model, valid_data)
+        val_correct, val_words, total_loss = val_test_iteration(model, valid_data, smoothing)
     pass
     loss_per_word = total_loss / val_words
     accuracy = val_correct / val_words
@@ -181,7 +180,7 @@ def val_epoch(model, valid_data):
 
 
 # Training process.
-def train_process(model, training_data, validation_data, optimizer, smooth_flag):
+def train_process(model, training_data, validation_data, optimizer, smoothing):
     model.to(device)
     if log_flag:
         print('[Info] Testing performance will be written to file: {}'.format(log_file))
@@ -192,13 +191,13 @@ def train_process(model, training_data, validation_data, optimizer, smooth_flag)
         print('[ Epoch', epoch_i, ']')
 
         start = time.time()
-        train_loss, train_accu = train_epoch(model, training_data, optimizer, smooth_flag)
+        train_loss, train_accu = train_epoch(model, training_data, optimizer, smoothing)
         train_time = (time.time() - start) / 60
         print('  - (Train) ppl: {ppl: 8.5f}, accuracy: {accu:3.3f} %, elapse: {elapse:3.3f} min'.format(
             ppl=math.exp(train_loss), accu=100 * train_accu, elapse=train_time))
 
         start = time.time()
-        valid_loss, valid_accu = val_epoch(model, validation_data)
+        valid_loss, valid_accu = val_epoch(model, validation_data, smoothing)
         val_time = (time.time() - start) / 60
         print('  - (Valid) ppl: {ppl: 8.5f}, accuracy: {accu:3.3f} %, elapse: {elapse:3.3f} min'.format(
             ppl=math.exp(valid_loss), accu=100 * valid_accu, elapse=val_time))
@@ -221,7 +220,7 @@ def train_process(model, training_data, validation_data, optimizer, smooth_flag)
 
 
 # Validation and testing dataset iterations.
-def val_test_iteration(model, data):
+def val_test_iteration(model, data, smoothing):
     total_words = 0
     total_loss = 0
     total_correct = 0
@@ -229,7 +228,7 @@ def val_test_iteration(model, data):
         # calculate loss and accuracy.
         pred, _ = model(inputs.t(), sent_lens)
         word_number, correct_words = accu_evaluation(pred[:, 1:, :], targets.t()[:, 1:])
-        loss = loss_calculation(pred, targets, sent_lens)
+        loss = loss_calculation(pred, targets, sent_lens, smoothing)
 
         total_words += word_number
         total_loss += loss.item() * word_number
@@ -241,20 +240,13 @@ def val_test_iteration(model, data):
 
 
 # Tesing process.
-def test_process(model, test_data):
-    total_loss = 0
-    test_words = 0
-    test_correct = 0
+def test_process(model, test_data, smoothing):
     if log_flag:
         print('[Info] Testing performance will be written to file: {}'.format(log_file))
         pass
     pass
 
-    for epoch_i in range(epochs):
-        with torch.no_grad():
-            test_correct, test_words, total_loss = val_test_iteration(model, test_data)
-        pass
-    pass
+    test_correct, test_words, total_loss = val_test_iteration(model, test_data, smoothing)
 
     test_loss = total_loss / test_words
     test_accu = test_correct / test_words
@@ -273,20 +265,20 @@ def test_process(model, test_data):
 def main():
     print("Every second should be created.", time.strftime('%Y-%m-%d %H:%M:%S'))
 
-    # Preparing DataLoader.
-    corpus = Corpus('data/ptb', train_batch_size=8, valid_batch_size=16, test_batch_size=1)
+    # preparing dataLoader.
+    corpus = Corpus('data/ptb', train_batch_size=8, valid_batch_size=8, test_batch_size=1)
 
-    # Loading Dataset and set parameters.
+    # loading dataset and set parameters.
     training_data, validation_data, testing_data = corpus.train_loader, corpus.valid_loader, corpus.test_loader
     vocab_size = len(corpus.voc)
     max_length = corpus.max_length
-    num_layers, model_dim, num_heads, ffn_dim, dropout, lr, smooth_flag = 2, 512, 8, 2048, 0.0, 1e-9, False
+    num_layers, model_dim, num_heads, ffn_dim, dropout, lr, smoothing = 2, 512, 8, 2048, 0.2, 1e-9, False
 
     print("[Data] train_length:", len(corpus.train_data), ", val_length:", len(corpus.valid_data),
           ", test_length:", len(corpus.test_data), ", vocab_size:", vocab_size, ", max_length:", max_length)
 
     print("[Para]  num_layers:", num_layers, ", model_dim:", model_dim, ", num_heads:", num_heads,
-          ", ffn_dim:", ffn_dim, ", dropout:", dropout, ", learning_rate:", lr, ", smoothing_flag:", smooth_flag)
+          ", ffn_dim:", ffn_dim, ", dropout:", dropout, ", lr:", lr, ", smooth:", smoothing)
 
     if log_flag:
         with open(log_file, 'w') as log:
@@ -310,8 +302,8 @@ def main():
         betas=(0.9, 0.98), eps=lr),
         model_dim)
 
-    model = train_process(transformer, training_data, validation_data, optimizer, smooth_flag)
-    test_process(model, testing_data)
+    model = train_process(transformer, training_data, validation_data, optimizer, smoothing)
+    test_process(model, testing_data, smoothing)
     pass
 
 
