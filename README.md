@@ -8,7 +8,7 @@ Preprocessing of input sequences has two steps, *Mask* and *Embedding*. The main
 
 The flowchart of this project is as follows.
 
-![modeling transformer](TransformerLM/include/data/modeling transformer.png)
+<img src="TransformerLM/include/data/modeling transformer.png" alt="modeling transformer" style="zoom:50%;" />
 
 ## Requirements
 
