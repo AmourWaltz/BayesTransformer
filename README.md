@@ -39,18 +39,58 @@ Python train.py -- cuda -1
 ## Results
 
 - Typically, language modeling is evaluated with ppl score of test dataset.
-- All results below are evaluated at training epoch 20 except 3-layer transformer.
+- All results below are evaluated at training epoch 20 except.
 - The record of training process is under /Transformer/include/data/log.log.
 
-| layers | pos_enc | epoch | dropout | accu | ppl  |
-| ------ | ------- | ----- | ------- | ---- | ---- |
-| 2      | True    | 20    | 0.2     | 22%  | 173  |
-| 2      | False   | 20    | 0.2     | 23%  | 168  |
-| 3      | False   | 35    | 0.2     | 20%  | 194  |
-| 2      | False   | 20    | 0.0     | 19%  | 206  |
+| layers | pad_mask | epoch | dropout | accu | ppl  |
+| ------ | -------- | ----- | ------- | ---- | ---- |
+| 6      | True     | 20    | 0.3     | 25%  | 103  |
+| 6      | True     | 20    | 0.2     | 25%  | 107  |
+| 6      | True     | 20    | 0.0     | 23%  | 115  |
+| 6      | False    | 20    | 0.2     | 22%  | 141  |
 
 ## Notes
 
-- Change singe gpu training code to multi-gpu.
+- Change XL net to standard transformer.
+- Change single gpu training code to multi-gpu.
 - Change dropout into bayes.
+
+
+
+## Task1: XL to standard
+
+- Replace RelMultiHeadAttn with MultiHeadAttn.
+- Reverse positional encoding.
+- Change num_layers = 6, heads = 8, dim_model = 512.
+
+### Results
+
+| dropout | original | 0.0  | 0.1  | 0.2  |
+| ------- | -------- | ---- | ---- | ---- |
+| ppl     | 82       | 131  | 116  | 96   |
+
+
+
+## Task2: Multi-gpu
+
+- Use nn.DataParallel.
+- Test: num_layers = 6, heads = 8, dim_model = 512, record time for each epoch, ppl and number of epochs of convergence.
+
+### Usage
+
+- Access to the project folder, and run the command below for computer with two gpus.
+
+```
+ Python train.py --cuda --devices 01
+```
+
+### Results
+
+| batch | single/s | ppl/epoch | multi | ppl/epoch |
+| ----- | -------- | --------- | ----- | --------- |
+| 10    | 91       | 92/10     | 71    | 110/35    |
+| 20    | 56       | 104/10    | 62    | 120/40    |
+| 40    | 41       | 106/15    | 60    | -         |
+| 80    | 35       | 108/15    | 59    | -         |
+| 160   | 32       | 110/15    | 59    | -         |
 

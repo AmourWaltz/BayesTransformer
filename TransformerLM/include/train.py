@@ -266,13 +266,13 @@ def main():
     print("Every second should be created.", time.strftime('%Y-%m-%d %H:%M:%S'))
 
     # preparing dataLoader.
-    corpus = Corpus('data/ptb', train_batch_size=8, valid_batch_size=8, test_batch_size=1)
+    corpus = Corpus('data/ptb', train_batch_size=16, valid_batch_size=16, test_batch_size=1)
 
     # loading dataset and set parameters.
     training_data, validation_data, testing_data = corpus.train_loader, corpus.valid_loader, corpus.test_loader
     vocab_size = len(corpus.voc)
     max_length = corpus.max_length
-    num_layers, model_dim, num_heads, ffn_dim, dropout, lr, smoothing = 2, 512, 8, 2048, 0.2, 1e-9, False
+    num_layers, model_dim, num_heads, ffn_dim, dropout, lr, smoothing = 6, 512, 8, 2048, 0.3, 1e-9, False
 
     print("[Data] train_length:", len(corpus.train_data), ", val_length:", len(corpus.valid_data),
           ", test_length:", len(corpus.test_data), ", vocab_size:", vocab_size, ", max_length:", max_length)

@@ -1,4 +1,5 @@
 import numpy as np
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as func
@@ -20,14 +21,15 @@ class ScaledDotProductAttention(nn.Module):
 
     def forward(self, query, key, value, scale=None, attn_mask=None):
         """
-        :param query: shape [B, L_q, D_q]
-        :param key: shape [B, L_k, D_k]
-        :param value: shape [B, L_v, D_v]
+        :param query: shape [B, L_q, D_q, N_heads]
+        :param key: shape [B, L_k, D_k, N_heads]
+        :param value: shape [B, L_v, D_v, N_heads]
         :param scale: make Softmax in low gradient
         :param attn_mask: masking tensor，shape [B, L_q, L_k]
         :return: context tensor as z and attetention tensor
         """
-        attention = torch.bmm(query, key.transpose(1, 2))
+        # attention = torch.bmm(query, key.transpose(1, 2))
+        attention = torch.einsum('bind,bjnd->bijn', (query, key))
         # print(attention)
         # print(attention.size(), attn_mask.size())
         if scale:
@@ -36,14 +38,17 @@ class ScaledDotProductAttention(nn.Module):
         pass
 
         if attn_mask is not None:
-            attention = attention.masked_fill_(attn_mask, -1e9)
+            attention = attention.masked_fill_(attn_mask[:, :, :, None], -1e9)
             pass
         pass
 
         # print(attention)
         attention = self.softmax(attention)
         attention = self.dropout(attention)
-        context = torch.bmm(attention, value)
+        
+        # context = torch.bmm(attention, value)
+        # print("attention.size(), value.size(): ", attention.size(), value.size())
+        context = torch.einsum('bijn,bjnd->bind', (attention, value))
 
         return context, attention
 
@@ -60,12 +65,12 @@ class MultiHeadAttention(nn.Module):
         super(MultiHeadAttention, self).__init__()
         self.dim_per_head = model_dim // num_heads
         self.num_heads = num_heads
-        self.linear_k = nn.Linear(model_dim, self.dim_per_head * num_heads)
-        self.linear_v = nn.Linear(model_dim, self.dim_per_head * num_heads)
-        self.linear_q = nn.Linear(model_dim, self.dim_per_head * num_heads)
+        self.linear_k = nn.Linear(model_dim, self.dim_per_head * num_heads, bias=False)
+        self.linear_v = nn.Linear(model_dim, self.dim_per_head * num_heads, bias=False)
+        self.linear_q = nn.Linear(model_dim, self.dim_per_head * num_heads, bias=False)
 
         self.dot_product_attention = ScaledDotProductAttention(dropout)
-        self.linear_final = nn.Linear(model_dim, model_dim)
+        self.linear_final = nn.Linear(model_dim, model_dim, bias=False)
         self.dropout = nn.Dropout(dropout)
         self.layer_norm = nn.LayerNorm(model_dim)
 
@@ -89,21 +94,21 @@ class MultiHeadAttention(nn.Module):
         query = self.linear_q(query)
 
         # split by heads, k q v shape [B * 8, L, 64]
-        key = key.view(batch_size * num_heads, -1, dim_per_head)
-        value = value.view(batch_size * num_heads, -1, dim_per_head)
-        query = query.view(batch_size * num_heads, -1, dim_per_head)
+        key = key.view(batch_size, -1, num_heads, dim_per_head)
+        value = value.view(batch_size, -1, num_heads, dim_per_head)
+        query = query.view(batch_size, -1, num_heads, dim_per_head)
 
         # print(attn_mask)
-        if attn_mask is not None:
-            attn_mask = attn_mask.repeat(num_heads, 1, 1)
-            pass
-        pass
+#         if attn_mask is not None:
+#             attn_mask = attn_mask.repeat(num_heads, 1, 1)
+#             pass
+#         pass
 
         # scaled dot-product attention
-        scale = (key.size(-1) // num_heads) ** -0.5
+        scale = key.size(-1) ** -0.5
         context, attention = self.dot_product_attention(query, key, value, scale, attn_mask)
         # concat heads
-        context = context.view(batch_size, -1, dim_per_head * num_heads)
+        context = context.contiguous().view(batch_size, context.size(1), dim_per_head * num_heads)
         output = self.linear_final(context)
         output = self.dropout(output)
 
@@ -112,6 +117,21 @@ class MultiHeadAttention(nn.Module):
 
         return output, attention
 
+
+# Make paddings in sequences invisible.
+def padding_mask(seq_k, seq_q):
+    """
+    :param seq_k: shape [B, L]
+    :param seq_q: shape [B, L]
+    :return: pad_mask shape [B, L, L]
+    """
+    len_q = seq_q.size(1)
+    pad_mask = seq_k.eq(0)
+    # print("pad_mask: ", pad_mask.size(), pad_mask)
+    pad_mask = pad_mask.unsqueeze(1).expand(-1, len_q, -1)
+
+    return pad_mask    
+    
 
 # To make latter word invisible for present decoder.
 def sequence_mask(seq):
@@ -125,6 +145,35 @@ def sequence_mask(seq):
     mask = mask.unsqueeze(0).expand(batch_size, -1, -1)
 
     return mask
+
+
+# # Compute the positional encodings once in trigonometric space.
+# class PositionalEncoding(nn.Module):
+#     """
+#     Where pos is the position and i is the dimension.
+#     That is, each dimension of the positional encoding corresponds to a sinusoid.
+#     The wavelengths form a geometric progression from 2π to 10000 · 2π.
+#     We chose this function because we hypothesized
+#     it would allow the model to easily learn to attend by relative positions,
+#     since for any ﬁxed offset k, PE pos+k can be represented as a linear function of PE pos .
+#     """
+#     def __init__(self, d_model, max_len):
+#         super(PositionalEncoding, self).__init__()
+#         self.encoding = torch.zeros(max_len, d_model)
+#         self.encoding.requires_grad = False
+
+#         pos = torch.arange(0, max_len)
+#         pos = pos.float().unsqueeze(dim=1)
+
+#         _2i = torch.arange(0, d_model, 2).float()
+
+#         self.encoding[:, 0::2] = torch.sin(pos / (10000 ** (_2i / d_model)))
+#         self.encoding[:, 1::2] = torch.cos(pos / (10000 ** (_2i / d_model)))
+
+#     def forward(self, x):
+#         batch_size, seq_len = x.size()
+#         # print("seq_len: ", seq_len)
+#         return self.encoding[:seq_len, :].cuda()
 
 
 # Compute the positional encodings once in trigonometric space.
@@ -240,23 +289,26 @@ class MainLayer(nn.Module):
                  num_heads=8, ffn_dim=2048, dropout=0.0):
         super(MainLayer, self).__init__()
         self.num_layers = num_layers
+        self.d_model = model_dim
         self.sublayers = nn.ModuleList(
           [SubLayer(model_dim, num_heads, ffn_dim, dropout) for _ in range(num_layers)])
-        self.seq_embedding = nn.Embedding(vocab_size + 1, model_dim, padding_idx=0)
+        self.word_embedding = nn.Embedding(vocab_size + 1, model_dim, padding_idx=0)
         self.pos_embedding = PositionalEncoding(model_dim, max_seq_len)
 
     def forward(self, inputs, inputs_len):
         inputs = inputs.clone().detach().long()
-        embeddings = self.seq_embedding(inputs)
+        embeddings = self.word_embedding(inputs)
+        embeddings = embeddings * np.sqrt(self.d_model)
         embeddings += self.pos_embedding(inputs_len)
         seq_mask = sequence_mask(inputs)
+        pad_mask = padding_mask(inputs, inputs)
 
         # print(seq_mask, self_attention_padding_mask)
         if torch.cuda.is_available():
-            attn_mask = torch.gt(seq_mask.cuda(), 0)
+            attn_mask = torch.gt(seq_mask.cuda() + pad_mask.cuda(), 0)
             pass
         else:
-            attn_mask = torch.gt(seq_mask, 0)
+            attn_mask = torch.gt(seq_mask + pad_mask, 0)
             pass
         pass
 
@@ -264,8 +316,11 @@ class MainLayer(nn.Module):
         self_attentions = []
         output = embeddings
         for sublayer in self.sublayers:
+            # start_time = time.time()
             output, attention = sublayer(output, attn_mask)
             self_attentions.append(attention)
+            # end_time = time.time()
+            # print("decoder time once: ", end_time - start_time)
             pass
         pass
 
