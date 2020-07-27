@@ -27,13 +27,7 @@ The flowchart of this project is as follows.
 - STEP 2. Run the command below to make datasets and train the model, and we can obtain results in .log file under /data.
 
 ```
-Python train.py -- cuda 0
-```
-
-If you want to run the project with cpu, do this.
-
-```
-Python train.py -- cuda -1
+Python train.py
 ```
 
 ## Results
