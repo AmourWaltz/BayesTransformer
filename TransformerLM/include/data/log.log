@@ -1,4 +1,4 @@
 [ Time: ] 
-Every second should be created. 2020-07-26 16:58:44
+Every second should be created. 2020-07-28 16:22:43
 [ Params: ]
-num_layers: 2, model_dim: 512, num_heads: 8, ffn_dim: 2048, dropout: 0.2, lr: 1e-09
+num_layers: 6, model_dim: 512, num_heads: 8, ffn_dim: 2048, dropout: 0.3, lr: 1e-09

@@ -1,5 +1,4 @@
 import numpy as np
-import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as func
@@ -14,6 +13,7 @@ class ScaledDotProductAttention(nn.Module):
     where the weight assigned to each value is computed
     by a compatibility of the query with the corresponding key.
     """
+
     def __init__(self, attention_dropout=0.0):
         super(ScaledDotProductAttention, self).__init__()
         self.dropout = nn.Dropout(attention_dropout)
@@ -45,7 +45,7 @@ class ScaledDotProductAttention(nn.Module):
         # print(attention)
         attention = self.softmax(attention)
         attention = self.dropout(attention)
-        
+
         # context = torch.bmm(attention, value)
         # print("attention.size(), value.size(): ", attention.size(), value.size())
         context = torch.einsum('bijn,bjnd->bind', (attention, value))
@@ -61,6 +61,7 @@ class MultiHeadAttention(nn.Module):
     We then perform the attention function in parallel, yielding d_v-dimensional output values.
     These are concatenated and once again projected, resulting in the ﬁnal values,
     """
+
     def __init__(self, model_dim=512, num_heads=8, dropout=0.0):
         super(MultiHeadAttention, self).__init__()
         self.dim_per_head = model_dim // num_heads
@@ -99,10 +100,10 @@ class MultiHeadAttention(nn.Module):
         query = query.view(batch_size, -1, num_heads, dim_per_head)
 
         # print(attn_mask)
-#         if attn_mask is not None:
-#             attn_mask = attn_mask.repeat(num_heads, 1, 1)
-#             pass
-#         pass
+        #         if attn_mask is not None:
+        #             attn_mask = attn_mask.repeat(num_heads, 1, 1)
+        #             pass
+        #         pass
 
         # scaled dot-product attention
         scale = key.size(-1) ** -0.5
@@ -130,8 +131,8 @@ def padding_mask(seq_k, seq_q):
     # print("pad_mask: ", pad_mask.size(), pad_mask)
     pad_mask = pad_mask.unsqueeze(1).expand(-1, len_q, -1)
 
-    return pad_mask    
-    
+    return pad_mask
+
 
 # To make latter word invisible for present decoder.
 def sequence_mask(seq):
@@ -157,7 +158,7 @@ def sequence_mask(seq):
 #     it would allow the model to easily learn to attend by relative positions,
 #     since for any ﬁxed offset k, PE pos+k can be represented as a linear function of PE pos .
 #     """
-#     def __init__(self, d_model, max_len):
+#     def __init__(self, d_model, max_len=150):
 #         super(PositionalEncoding, self).__init__()
 #         self.encoding = torch.zeros(max_len, d_model)
 #         self.encoding.requires_grad = False
@@ -186,7 +187,8 @@ class PositionalEncoding(nn.Module):
     it would allow the model to easily learn to attend by relative positions,
     since for any ﬁxed offset k, PE pos+k can be represented as a linear function of PE pos .
     """
-    def __init__(self, d_model, max_seq_len):
+
+    def __init__(self, d_model, max_seq_len=150):
         """
         :param d_model: sclar, model dimension: 512 in Attention Is All You Need
         :param max_seq_len: sclar, the maximum of input sequence
@@ -243,6 +245,7 @@ class PositionalWiseFeedForward(nn.Module):
     which is applied to each position separately and identically.
     This consists of two linear transformations with a ReLU activation in between.
     """
+
     def __init__(self, model_dim=512, ffn_dim=2048, dropout=0.0):
         super(PositionalWiseFeedForward, self).__init__()
         self.w1 = nn.Conv1d(model_dim, ffn_dim, 1)
@@ -265,6 +268,7 @@ class SubLayer(nn.Module):
     """
     Decoder is made of self-attn, and feed forward.
     """
+
     def __init__(self, model_dim, num_heads=8, ffn_dim=2048, dropout=0.0):
         super(SubLayer, self).__init__()
         self.attention = MultiHeadAttention(model_dim, num_heads, dropout)
@@ -285,13 +289,14 @@ class MainLayer(nn.Module):
     """
     Core decoder is a stack of N layers.
     """
+
     def __init__(self, vocab_size, max_seq_len, num_layers=6, model_dim=512,
                  num_heads=8, ffn_dim=2048, dropout=0.0):
         super(MainLayer, self).__init__()
         self.num_layers = num_layers
         self.d_model = model_dim
         self.sublayers = nn.ModuleList(
-          [SubLayer(model_dim, num_heads, ffn_dim, dropout) for _ in range(num_layers)])
+            [SubLayer(model_dim, num_heads, ffn_dim, dropout) for _ in range(num_layers)])
         self.word_embedding = nn.Embedding(vocab_size + 1, model_dim, padding_idx=0)
         self.pos_embedding = PositionalEncoding(model_dim, max_seq_len)
 

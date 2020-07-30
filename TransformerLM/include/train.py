@@ -1,6 +1,8 @@
 import math
 import time
 from data import Corpus
+import data2
+from utils import batchify, get_batch
 import numpy as np
 import torch
 import torch.nn as nn
@@ -19,8 +21,9 @@ else:
 pass
 
 PAD = 0
-epochs = 20
-log_flag = True
+epochs = 12
+data_version = 1
+log_flag = False
 log_file = 'data/log.log'
 
 criterion = nn.CrossEntropyLoss()
@@ -136,32 +139,76 @@ def train_epoch(model, training_data, optimizer, smoothing):
     total_words = 0
     total_correct = 0
 
-    for loop_i, (inputs, targets, sent_lens) in enumerate(training_data):
-        # backward
-        optimizer.zero_grad()
-        pred, _ = model(inputs.t(), sent_lens)
-        word_number, correct_words = accu_evaluation(pred[:, 1:, :], targets.t()[:, 1:])
-        loss = loss_calculation(pred, targets, sent_lens, smoothing=smoothing)
-        loss.backward()
+    if data_version == 0:
+        for loop_i, (inputs, targets, sent_lens) in enumerate(training_data):
+            # backward
+            optimizer.zero_grad()
+            print(sent_lens.size())
+            pred, _ = model(inputs.t(), sent_lens)
+            word_number, correct_words = accu_evaluation(pred[:, 1:, :], targets.t()[:, 1:])
+            loss = loss_calculation(pred, targets, sent_lens, smoothing=smoothing)
+            loss.backward()
 
-        # update parameters
-        optimizer.step_and_update_lr()
+            # update parameters
+            optimizer.step_and_update_lr()
 
-        total_words += word_number
-        total_loss += loss.item() * word_number
+            total_words += word_number
+            total_loss += loss.item() * word_number
 
-        total_correct += correct_words
-        accuracy = total_correct / total_words
+            total_correct += correct_words
+            accuracy = total_correct / total_words
 
-        if loop_i % 1000 == 0:
-            print("train_loop: {loop: 5d}, loss: {loss: 8.5f}, accuracy: {accu:3.3f}".
-                  format(loop=loop_i, loss=loss, accu=accuracy * 100))
-            # print("pred output: ", pred)
-            # print("pred: ", pred.argmax(dim=2))
-            # print("targets: ", targets.t())
+            if loop_i % 1000 == 0:
+                print("train_loop: {loop: 5d}, loss: {loss: 8.5f}, accuracy: {accu:3.3f}".
+                      format(loop=loop_i, loss=loss, accu=accuracy * 100))
+                # print("pred output: ", pred)
+                # print("pred: ", pred.argmax(dim=2))
+                # print("targets: ", targets.t())
+                pass
             pass
         pass
-    pass
+    else:
+        loop_i = 0
+        step = 0
+
+        while loop_i < training_data.size(0) - 1 - 1:
+            bptt = 60 if np.random.random() < 0.95 else 70 / 2.
+            # Prevent excessively small or negative sequence lengths
+            seq_len = max(5, int(np.random.normal(bptt, 5)))
+            # print(seq_len)
+
+            step += 1
+
+            model.train()
+            inputs, target = get_batch(training_data, loop_i, seq_len=seq_len)
+            batch = inputs.size(1)
+            seq_lens = torch.full([batch], inputs.size(0), dtype=torch.int32)
+
+            optimizer.zero_grad()
+            pred, _ = model(inputs.t(), seq_lens)
+            # print(target.size(), pred.size())
+            word_number, correct_words = accu_evaluation(pred[:, :, :], target.t()[:, :])
+            loss = loss_calculation(pred, target, seq_lens)
+            loss.backward()
+            # update parameters
+            optimizer.step_and_update_lr()
+
+            total_words += word_number
+            total_loss += loss.item() * word_number
+
+            total_correct += correct_words
+            accuracy = total_correct / total_words
+
+            if step % 200 == 0:
+                print("step: {step: 5d}, loss: {loss: 8.5f}, accuracy: {accu:3.3f}".
+                      format(step=step, loss=loss, accu=accuracy * 100))
+                # print("pred output: ", pred)
+                # print("pred: ", pred.argmax(dim=2))
+                # print("targets: ", targets.t())
+                pass
+            pass
+            loop_i += seq_len
+        pass
 
     loss_per_word = total_loss / total_words
     accuracy = total_correct / total_words
@@ -172,7 +219,7 @@ def train_epoch(model, training_data, optimizer, smoothing):
 def val_epoch(model, valid_data, smoothing):
     model.eval()
     with torch.no_grad():
-        val_correct, val_words, total_loss = val_test_iteration(model, valid_data, smoothing)
+        val_correct, val_words, total_loss = val_test_epoch(model, valid_data, smoothing)
     pass
     loss_per_word = total_loss / val_words
     accuracy = val_correct / val_words
@@ -220,21 +267,40 @@ def train_process(model, training_data, validation_data, optimizer, smoothing):
 
 
 # Validation and testing dataset iterations.
-def val_test_iteration(model, data, smoothing):
+def val_test_epoch(model, data, smoothing):
     total_words = 0
     total_loss = 0
     total_correct = 0
-    for _, (inputs, targets, sent_lens) in enumerate(data):
-        # calculate loss and accuracy.
-        pred, _ = model(inputs.t(), sent_lens)
-        word_number, correct_words = accu_evaluation(pred[:, 1:, :], targets.t()[:, 1:])
-        loss = loss_calculation(pred, targets, sent_lens, smoothing)
+    if data_version == 0:
+        for _, (inputs, targets, sent_lens) in enumerate(data):
+            # calculate loss and accuracy.
+            pred, _ = model(inputs.t(), sent_lens)
+            word_number, correct_words = accu_evaluation(pred[:, 1:, :], targets.t()[:, 1:])
+            loss = loss_calculation(pred, targets, sent_lens, smoothing)
 
-        total_words += word_number
-        total_loss += loss.item() * word_number
+            total_words += word_number
+            total_loss += loss.item() * word_number
 
-        total_correct += correct_words
-    pass
+            total_correct += correct_words
+        pass
+    else:
+        seq_len = 45
+        for loop_i in range(0, data.size(0) - 1, seq_len):
+            model.eval()
+            inputs, target = get_batch(data, loop_i, seq_len=seq_len)
+            batch = inputs.size(1)
+            seq_lens = torch.full([batch], inputs.size(0), dtype=torch.int32)
+
+            pred, _ = model(inputs.t(), seq_lens)
+            word_number, correct_words = accu_evaluation(pred[:, :, :], target.t()[:, :])
+            loss = loss_calculation(pred, target, seq_lens)
+
+            total_words += word_number
+            total_loss += loss.item() * word_number
+
+            total_correct += correct_words
+            pass
+        pass
 
     return total_correct, total_words, total_loss
 
@@ -246,7 +312,7 @@ def test_process(model, test_data, smoothing):
         pass
     pass
 
-    test_correct, test_words, total_loss = val_test_iteration(model, test_data, smoothing)
+    test_correct, test_words, total_loss = val_test_epoch(model, test_data, smoothing)
 
     test_loss = total_loss / test_words
     test_accu = test_correct / test_words
@@ -266,16 +332,32 @@ def main():
     print("Every second should be created.", time.strftime('%Y-%m-%d %H:%M:%S'))
 
     # preparing dataLoader.
-    corpus = Corpus('data/ptb', train_batch_size=16, valid_batch_size=16, test_batch_size=1)
+    if data_version == 0:
+        corpus = Corpus('data/ptb', train_batch_size=16, valid_batch_size=16, test_batch_size=1)
+        training_data, validation_data, testing_data = corpus.train_loader, corpus.valid_loader, corpus.test_loader
+        vocab_size = len(corpus.voc)
+        max_length = corpus.max_length
+        print("[Data] train_length:", len(corpus.train_data), ", val_length:", len(corpus.valid_data),
+              ", test_length:", len(corpus.test_data), ", vocab_size:", vocab_size, ", max_length:", max_length)
+
+        pass
+    else:
+        corpus = data2.Corpus('data/ptb')
+        # training_data, validation_data, testing_data = corpus.train, corpus.valid, corpus.test
+        # print(training_data.size(), validation_data.size(), testing_data.size())
+        training_data = batchify(corpus.train, 10)
+        validation_data = batchify(corpus.valid, 10)
+        testing_data = batchify(corpus.test, 1)
+        vocab_size = len(corpus.dictionary)
+        max_length = 150
+        print("[Data] train_length:", len(corpus.train), ", val_length:", len(corpus.valid),
+              ", test_length:", len(corpus.test), ", vocab_size:", vocab_size)
+
+        pass
+    pass
 
     # loading dataset and set parameters.
-    training_data, validation_data, testing_data = corpus.train_loader, corpus.valid_loader, corpus.test_loader
-    vocab_size = len(corpus.voc)
-    max_length = corpus.max_length
-    num_layers, model_dim, num_heads, ffn_dim, dropout, lr, smoothing = 6, 512, 8, 2048, 0.3, 1e-9, False
-
-    print("[Data] train_length:", len(corpus.train_data), ", val_length:", len(corpus.valid_data),
-          ", test_length:", len(corpus.test_data), ", vocab_size:", vocab_size, ", max_length:", max_length)
+    num_layers, model_dim, num_heads, ffn_dim, dropout, lr, smoothing = 6, 512, 8, 2048, 0.2, 1e-9, False
 
     print("[Para]  num_layers:", num_layers, ", model_dim:", model_dim, ", num_heads:", num_heads,
           ", ffn_dim:", ffn_dim, ", dropout:", dropout, ", lr:", lr, ", smooth:", smoothing)

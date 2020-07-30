@@ -181,7 +181,7 @@ class Corpus(object):
         self.train_data = TextDataset(os.path.join(data_dir, 'train.txt'), self.voc)
         self.valid_data = TextDataset(os.path.join(data_dir, 'valid.txt'), self.voc)
         self.test_data = TextDataset(os.path.join(data_dir, 'test.txt'), self.voc)
-        # print("lengths: ", len(self.train_data), len(self.valid_data), len(self.test_data))
+        print("lengths: ", self.train_data, len(self.valid_data), len(self.test_data))
         # print(list(map(len, self.train_data.words)))
         train_lens = list(map(len, self.train_data.words))
         valid_lens = list(map(len, self.valid_data.words))
