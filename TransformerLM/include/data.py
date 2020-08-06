@@ -4,6 +4,8 @@ import torch.utils.data as data
 import unicodedata
 import time
 
+data_version = 2
+
 if torch.cuda.is_available():
     device = torch.device('cuda')
     pass
@@ -30,6 +32,7 @@ class Vocabulary(object):
         super(Vocabulary, self).__init__()
         self.use_num = use_num
         self.word2idx = {}
+        self.word_feq = {}
         self.idx2word = dict()
         self.word2idx[SOS] = 0
         self.idx2word[0] = SOS
@@ -39,7 +42,10 @@ class Vocabulary(object):
         # Look up the vocabulary as a list.
         # print("vocabulary: ", words)
 
-        for word in words:
+        for loop_i, word in enumerate(words):
+            num_word = len(str(loop_i)) + 1
+            word = word[:-num_word]
+            # print(word)
             if self.use_num and self.is_number(word):
                 word = NUM
                 pass
@@ -65,8 +71,19 @@ class Vocabulary(object):
         pass
 
         if word in self.word2idx:
+            # self.word_feq[word] += 1
             return self.word2idx[word]
         else:
+            # if word == 'email':
+            #     self.email += 1
+            #     pass
+            # elif word == 'website':
+            #     self.website += 1
+            #     pass
+            # elif word == '-em':
+            #     self.em += 1
+            #     pass
+            # pass
             return self.word2idx[UNK]
         pass
 
@@ -150,6 +167,7 @@ class TextDataset(data.Dataset):
                     pass
                 pass
             pass
+
             # Ends to each sentence.
             words[-1].append(EOS)
             ids[-1].append(voc.word2id(EOS))
@@ -177,11 +195,21 @@ class Corpus(object):
 
     def __init__(self, data_dir, train_batch_size, valid_batch_size, test_batch_size):
         super(Corpus, self).__init__()
-        self.voc = Vocabulary(os.path.join(data_dir, 'voc.txt'))
-        self.train_data = TextDataset(os.path.join(data_dir, 'train.txt'), self.voc)
-        self.valid_data = TextDataset(os.path.join(data_dir, 'valid.txt'), self.voc)
-        self.test_data = TextDataset(os.path.join(data_dir, 'test.txt'), self.voc)
-        print("lengths: ", self.train_data, len(self.valid_data), len(self.test_data))
+        if data_version == 0:
+            self.voc = Vocabulary(os.path.join(data_dir, 'voc.txt'))
+            self.train_data = TextDataset(os.path.join(data_dir, 'train.txt'), self.voc)
+            self.valid_data = TextDataset(os.path.join(data_dir, 'valid.txt'), self.voc)
+            self.test_data = TextDataset(os.path.join(data_dir, 'test.txt'), self.voc)
+            pass
+        elif data_version == 2:
+            self.voc = Vocabulary(os.path.join(data_dir, 'words.txt'))
+            self.train_data = TextDataset(os.path.join(data_dir, 'fisher.txt'), self.voc)
+            self.valid_data = TextDataset(os.path.join(data_dir, 'dev.txt'), self.voc)
+            self.test_data = TextDataset(os.path.join(data_dir, 'swbd.txt'), self.voc)
+            pass
+        pass
+
+        # print("lengths: ", len(self.train_data), len(self.valid_data), len(self.test_data))
         # print(list(map(len, self.train_data.words)))
         train_lens = list(map(len, self.train_data.words))
         valid_lens = list(map(len, self.valid_data.words))

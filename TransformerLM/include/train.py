@@ -1,3 +1,5 @@
+import os
+import hashlib
 import math
 import time
 from data import Corpus
@@ -11,6 +13,8 @@ import torch.nn.functional as func
 import torch.optim as optim
 import torch.utils.data
 from model import Modeling
+from data import data_version
+
 
 if torch.cuda.is_available():
     device = torch.device('cuda')
@@ -22,7 +26,6 @@ pass
 
 PAD = 0
 epochs = 12
-data_version = 1
 log_flag = False
 log_file = 'data/log.log'
 
@@ -143,7 +146,6 @@ def train_epoch(model, training_data, optimizer, smoothing):
         for loop_i, (inputs, targets, sent_lens) in enumerate(training_data):
             # backward
             optimizer.zero_grad()
-            print(sent_lens.size())
             pred, _ = model(inputs.t(), sent_lens)
             word_number, correct_words = accu_evaluation(pred[:, 1:, :], targets.t()[:, 1:])
             loss = loss_calculation(pred, targets, sent_lens, smoothing=smoothing)
@@ -167,7 +169,7 @@ def train_epoch(model, training_data, optimizer, smoothing):
                 pass
             pass
         pass
-    else:
+    elif data_version == 1 or 2:
         loop_i = 0
         step = 0
 
@@ -283,7 +285,7 @@ def val_test_epoch(model, data, smoothing):
 
             total_correct += correct_words
         pass
-    else:
+    elif data_version == 1 or 2:
         seq_len = 45
         for loop_i in range(0, data.size(0) - 1, seq_len):
             model.eval()
@@ -341,7 +343,7 @@ def main():
               ", test_length:", len(corpus.test_data), ", vocab_size:", vocab_size, ", max_length:", max_length)
 
         pass
-    else:
+    elif data_version == 1:
         corpus = data2.Corpus('data/ptb')
         # training_data, validation_data, testing_data = corpus.train, corpus.valid, corpus.test
         # print(training_data.size(), validation_data.size(), testing_data.size())
@@ -354,10 +356,38 @@ def main():
               ", test_length:", len(corpus.test), ", vocab_size:", vocab_size)
 
         pass
+    else:
+        use_voc = True
+        fn = os.path.join(
+            'data/fds_set',
+            'corpus.{}.data'.format(hashlib.md5('data/fds_set'.encode()).hexdigest()))
+        if os.path.exists(fn):
+            print("Load Dataset !")
+            corpus = torch.load(fn)
+        else:
+            print("Make Dataset !")
+            corpus = data2.Corpus('data/fds_set/', use_voc=use_voc)
+            torch.save(corpus, fn)
+            pass
+        pass
+        training_data = batchify(corpus.train, 16)
+        validation_data = batchify(corpus.valid, 16)
+        testing_data = batchify(corpus.test, 1)
+        if use_voc is False:
+            vocab_size = len(corpus.dictionary)
+            pass
+        else:
+            vocab_size = len(corpus.voc)
+            pass
+        pass
+        max_length = 200
+        print("[Data] train_length:", len(corpus.train), ", val_length:", len(corpus.valid),
+              ", test_length:", len(corpus.test), ", vocab_size:", vocab_size)
+        pass
     pass
 
     # loading dataset and set parameters.
-    num_layers, model_dim, num_heads, ffn_dim, dropout, lr, smoothing = 6, 512, 8, 2048, 0.2, 1e-9, False
+    num_layers, model_dim, num_heads, ffn_dim, dropout, lr, smoothing = 16, 512, 8, 2048, 0.0, 1e-9, False
 
     print("[Para]  num_layers:", num_layers, ", model_dim:", model_dim, ", num_heads:", num_heads,
           ", ffn_dim:", ffn_dim, ", dropout:", dropout, ", lr:", lr, ", smooth:", smoothing)
