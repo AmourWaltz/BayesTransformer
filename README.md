@@ -51,13 +51,27 @@ Python train.py
 
 
 
-## Task1: XL to standard
+## XL to standard
 
 - Replace RelMultiHeadAttn with MultiHeadAttn.
 - Reverse positional encoding.
 - Change num_layers = 6, heads = 8, dim_model = 512.
 
-### Results
+### Usage
+
+- STEP 1. Access to the destination folder, and PTB is under /data.
+
+```
+ cd /Standard-XL
+```
+
+- STEP 2. Run the command below to make datasets and train the model, and we can obtain results in .log file under /data.
+
+```
+Python train.py
+```
+
+### Results on ptb
 
 | dropout | original | 0.0  | 0.1  | 0.2  |
 | ------- | -------- | ---- | ---- | ---- |
@@ -65,14 +79,20 @@ Python train.py
 
 
 
-## Task2: Multi-gpu
+## Multi-gpu
 
 - Use nn.DataParallel.
 - Test: num_layers = 6, heads = 8, dim_model = 512, record time for each epoch, ppl and number of epochs of convergence.
 
 ### Usage
 
-- Access to the project folder, and run the command below for computer with two gpus.
+- STEP 1. Access to the destination folder, and PTB is under /data.
+
+```
+ cd /Standard-XL
+```
+
+- STEP 2. Run the command below for computer with two gpus.
 
 ```
  Python train.py --cuda --devices 01
