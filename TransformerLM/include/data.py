@@ -4,7 +4,7 @@ import torch.utils.data as data
 import unicodedata
 import time
 
-data_version = 2
+data_version = 0
 
 if torch.cuda.is_available():
     device = torch.device('cuda')
@@ -43,8 +43,12 @@ class Vocabulary(object):
         # print("vocabulary: ", words)
 
         for loop_i, word in enumerate(words):
-            num_word = len(str(loop_i)) + 1
-            word = word[:-num_word]
+            if data_version == 2:
+                num_word = len(str(loop_i)) + 1
+                word = word[:-num_word]
+                pass
+            pass
+
             # print(word)
             if self.use_num and self.is_number(word):
                 word = NUM

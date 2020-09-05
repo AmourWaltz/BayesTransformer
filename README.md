@@ -27,7 +27,7 @@ The flowchart of this project is as follows.
 - STEP 2. Run the command below to make datasets and train the model, and we can obtain results in .log file under /data.
 
 ```
-Python train.py
+python train.py
 ```
 
 ## Results
@@ -68,7 +68,7 @@ Python train.py
 - STEP 2. Run the command below to make datasets and train the model, and we can obtain results in .log file under /data.
 
 ```
-Python train.py
+python train.py
 ```
 
 ### Results on ptb
@@ -95,7 +95,7 @@ Python train.py
 - STEP 2. Run the command below for computer with two gpus.
 
 ```
- Python train.py --cuda --devices 01
+ python train.py --cuda --devices 01
 ```
 
 ### Results

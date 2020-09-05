@@ -172,6 +172,7 @@ def train_epoch(model, training_data, optimizer, smoothing):
     elif data_version == 1 or 2:
         loop_i = 0
         step = 0
+        step_loss = 0
 
         while loop_i < training_data.size(0) - 1 - 1:
             bptt = 60 if np.random.random() < 0.95 else 70 / 2.
@@ -196,14 +197,16 @@ def train_epoch(model, training_data, optimizer, smoothing):
             optimizer.step_and_update_lr()
 
             total_words += word_number
-            total_loss += loss.item() * word_number
+            total_loss += loss.item()
+            step_loss += loss.item()
 
             total_correct += correct_words
             accuracy = total_correct / total_words
 
             if step % 200 == 0:
+                each_loss = step_loss / 200
                 print("step: {step: 5d}, loss: {loss: 8.5f}, accuracy: {accu:3.3f}".
-                      format(step=step, loss=loss, accu=accuracy * 100))
+                      format(step=step, loss=each_loss, accu=accuracy * 100))
                 # print("pred output: ", pred)
                 # print("pred: ", pred.argmax(dim=2))
                 # print("targets: ", targets.t())
@@ -214,7 +217,7 @@ def train_epoch(model, training_data, optimizer, smoothing):
 
     loss_per_word = total_loss / total_words
     accuracy = total_correct / total_words
-    return loss_per_word, accuracy
+    return loss_per_word, accuracy, model
 
 
 # Epoch operation in evaluation phase.
@@ -231,6 +234,9 @@ def val_epoch(model, valid_data, smoothing):
 # Training process.
 def train_process(model, training_data, validation_data, optimizer, smoothing):
     model.to(device)
+    min_loss = 0
+    best_model = model
+
     if log_flag:
         print('[Info] Testing performance will be written to file: {}'.format(log_file))
         pass
@@ -240,7 +246,7 @@ def train_process(model, training_data, validation_data, optimizer, smoothing):
         print('[ Epoch', epoch_i, ']')
 
         start = time.time()
-        train_loss, train_accu = train_epoch(model, training_data, optimizer, smoothing)
+        train_loss, train_accu, model = train_epoch(model, training_data, optimizer, smoothing)
         train_time = (time.time() - start) / 60
         print('  - (Train) ppl: {ppl: 8.5f}, accuracy: {accu:3.3f} %, elapse: {elapse:3.3f} min'.format(
             ppl=math.exp(train_loss), accu=100 * train_accu, elapse=train_time))
@@ -250,6 +256,12 @@ def train_process(model, training_data, validation_data, optimizer, smoothing):
         val_time = (time.time() - start) / 60
         print('  - (Valid) ppl: {ppl: 8.5f}, accuracy: {accu:3.3f} %, elapse: {elapse:3.3f} min'.format(
             ppl=math.exp(valid_loss), accu=100 * valid_accu, elapse=val_time))
+
+        if min_loss > valid_loss or min_loss == 0:
+            min_loss = valid_loss
+            best_model = model
+            pass
+        pass
 
         if log_flag:
             with open(log_file, 'a') as log:
@@ -265,7 +277,7 @@ def train_process(model, training_data, validation_data, optimizer, smoothing):
         pass
     pass
 
-    return model
+    return best_model
 
 
 # Validation and testing dataset iterations.
@@ -387,7 +399,7 @@ def main():
     pass
 
     # loading dataset and set parameters.
-    num_layers, model_dim, num_heads, ffn_dim, dropout, lr, smoothing = 16, 512, 8, 2048, 0.0, 1e-9, False
+    num_layers, model_dim, num_heads, ffn_dim, dropout, lr, smoothing = 16, 512, 8, 2048, 0.0, 0.01, False
 
     print("[Para]  num_layers:", num_layers, ", model_dim:", model_dim, ", num_heads:", num_heads,
           ", ffn_dim:", ffn_dim, ", dropout:", dropout, ", lr:", lr, ", smooth:", smoothing)
@@ -409,6 +421,7 @@ def main():
                            num_layers=num_layers, model_dim=model_dim, num_heads=num_heads,
                            ffn_dim=ffn_dim, dropout=dropout).to(device)
 
+    # optimizer = optim.Adam(transformer.parameters(), lr=lr)
     optimizer = ScheduledOptim(optim.Adam(
         filter(lambda x: x.requires_grad, transformer.parameters()),
         betas=(0.9, 0.98), eps=lr),
