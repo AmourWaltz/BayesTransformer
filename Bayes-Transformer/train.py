@@ -14,8 +14,7 @@ from utils import batchify, get_batch, create_exp_dir, get_logger
 parser = argparse.ArgumentParser(description='PyTorch PennTreeBank Language Model')
 parser.add_argument('--work_dir', default='TFM', type=str,
                     help='experiment directory.')
-parser.add_argument('--data', type=str, default='../TransformerLM/include/data/ptb'
-                                                '',
+parser.add_argument('--data', type=str, default='data/penn/',
                     help='location of the data corpus')
 
 # model related
@@ -36,7 +35,7 @@ parser.add_argument('--clamp_len', type=int, default=-1,
 
 parser.add_argument('--dropoute', type=float, default=0.2,
                     help='dropout to remove words from embedding layer')
-parser.add_argument('--dropouti', type=float, default=0.2,
+parser.add_argument('--dropouti', type=float, default=0.6,
                     help='dropout for input embedding vectors')
 parser.add_argument('--dropouta', type=float, default=0.2,
                     help='dropout applied to multi-head attention layers')
@@ -44,7 +43,7 @@ parser.add_argument('--dropoutf', type=float, default=0.2,
                     help='dropout applied to positionwise ff layers')
 parser.add_argument('--dropouth', type=float, default=0.0,
                     help='dropout applied to decoder layer output')
-parser.add_argument('--dropouto', type=float, default=0.2,
+parser.add_argument('--dropouto', type=float, default=0.5,
                     help='dropout applied to the output (before the logit)')
 
 # initialization
@@ -82,9 +81,9 @@ parser.add_argument('--beta', type=float, default=0.1,
 parser.add_argument('--wdecay', type=float, default=1.2e-6,
                     help='weight decay applied to all weights')
 
-parser.add_argument('--std_epochs', type=int, default=10,
+parser.add_argument('--std_epochs', type=int, default=125,
                     help='number of epochs with standard training')
-parser.add_argument('--ema_epochs', type=int, default=0,
+parser.add_argument('--ema_epochs', type=int, default=50,
                     help='number of epochs with ema of params')
 parser.add_argument('--decay_epochs', type=int, default=-1,
                     help='number of epochs with params decay')
@@ -175,14 +174,9 @@ else:
     corpus = data.Corpus(args.data)
     torch.save(corpus, fn)
 
-# logging('Producing dataset...')
-# corpus = data.Corpus(args.data)
-# torch.save(corpus, fn)
-
 eval_batch_size = 10
 test_batch_size = 1
 train_data = batchify(corpus.train, args.batch_size, args)
-print(len(corpus.train))
 val_data = batchify(corpus.valid, eval_batch_size, args)
 test_data = batchify(corpus.test, test_batch_size, args)
 
@@ -302,7 +296,7 @@ logging('=' * 100)
 # Training code
 ###############################################################################
 
-def evaluate(data_source, batch_size=10, eval_bptt=50):
+def evaluate(data_source, batch_size=10, eval_bptt=10):
     # Turn on evaluation mode which disables dropout.
     model.eval()
 
@@ -362,19 +356,17 @@ def train():
                 scheduler.step()
 
         model.train()
-        # print(train_data.size(), seq_len)
         data, target = get_batch(train_data, i, args, seq_len=seq_len)
 
         optimizer.zero_grad()
 
         ##### Forward
-        # print(data, target)
         ret = model(data, target, *mems, return_h=True)
-        raw_loss, mems, last_hid = ret[0], ret[1:-1], ret[-1]
+        raw_loss, mems, last_hid, kl_loss = ret[0], ret[1:-2], ret[-2], ret[-1]
         raw_loss = raw_loss.mean()
 
-        loss = raw_loss
-
+        loss = raw_loss + kl_loss
+        print("raw_loss, kl_loss:", raw_loss, kl_loss)
         # Activiation Regularization
         if args.alpha:
             loss = loss + args.alpha * last_hid.pow(2).mean()
@@ -384,6 +376,12 @@ def train():
             loss = loss + args.beta * (last_hid[1:] - last_hid[:-1]).pow(2).mean()
 
         ##### Backward
+        # print("data.size:", data.size())
+        # for i in range(args.n_layer):
+        #     kl_loss = kl_loss + model.layers[i].pos_ff.kl_divergence()/(data.size[0]*args.batch_size)
+        #     pass
+        # print("ongoing")
+        # kl_loss = kl_loss + model.layers()[0].pos_ff.kl_divergence() / (data.size[0] * args.batch_size)
         loss.backward()
 
         # `clip_grad_norm` helps prevent the exploding gradient problem
@@ -411,10 +409,10 @@ def train():
             cur_loss = total_loss / args.log_interval
             elapsed = time.time() - start_time
             log_str = '| epoch {:3d} | {:5d}/{:5d} batches | lr {:.4g} ' \
-                      '| ms/batch {:5.2f} | loss {:5.2f} | ppl {:8.2f} ' \
-                      '| bpt {:8.3f} '.format(epoch, batch,
+                      '| ms/batch {:5.2f} | loss {:5.2f} | kl_loss {:5.2f} ' \
+                      '| ppl {:8.2f} | bpt {:8.3f} '.format(epoch, batch,
                 len(train_data) // args.bptt, optimizer.param_groups[0]['lr'],
-                elapsed * 1000 / args.log_interval, cur_loss,
+                elapsed * 1000 / args.log_interval, cur_loss, kl_loss,
                 math.exp(cur_loss), cur_loss / math.log(2))
             logging(log_str)
             total_loss = 0

@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/Bayes-Transformer.iml" filepath="$PROJECT_DIR$/.idea/Bayes-Transformer.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/ptb.iml" filepath="$PROJECT_DIR$/.idea/ptb.iml" />
     </modules>
   </component>
 </project>
