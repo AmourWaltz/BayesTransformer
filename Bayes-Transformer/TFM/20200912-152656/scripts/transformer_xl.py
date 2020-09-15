@@ -1,7 +1,12 @@
+import functools
+import numpy as np
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from adaptive_softmax import AdaptiveLogSoftmax
 from embed_regularize import embedded_dropout
 from locked_dropout import LockedDropout
 
@@ -27,7 +32,6 @@ class PositionalEmbedding(nn.Module):
         self.register_buffer('inv_freq', inv_freq)
 
     def forward(self, pos_seq, bsz=None):
-        # torch.ger(), exterior product.
         sinusoid_inp = torch.ger(pos_seq, self.inv_freq)
         pos_emb = torch.cat([sinusoid_inp.sin(), sinusoid_inp.cos()], dim=-1)
 
@@ -62,6 +66,70 @@ class PositionwiseFF(nn.Module):
         output = self.layer_norm(inp + core_out)
 
         return output
+
+
+class BayesPositionwiseFF(nn.Module):
+    def __init__(self, d_model, d_inner, dropout):
+        super(BayesPositionwiseFF, self).__init__()
+        self.d_model = d_model
+        self.d_inner = d_inner
+        self.dropout = dropout
+        self.weight_mean1 = nn.Parameter(torch.rand(self.d_inner, self.d_model))
+        self.weight_mean2 = nn.Parameter(torch.rand(self.d_model, self.d_inner))
+        self.weight_std1 = nn.Parameter(torch.rand(self.d_inner, self.d_model))
+        self.weight_std2 = nn.Parameter(torch.rand(self.d_model, self.d_inner))
+        self.reset_parameters()
+        self.layer_norm = nn.LayerNorm(d_model)
+
+    def reset_parameters(self):
+        stdm = 1. / math.sqrt(self.d_model+1)
+        stdi = 1. / math.sqrt(self.d_inner+1)
+        self.weight_mean1.data.uniform_(-stdm, stdm)
+        self.weight_mean2.data.uniform_(-stdi, stdi)
+        self.weight_std1.data.uniform_(2*np.log(stdm), np.log(stdm))
+        self.weight_std2.data.uniform_(2*np.log(stdi), np.log(stdi))
+
+    def sample_weight_diff(self):
+        if self.training:
+            weight_std_1 = torch.exp(self.weight_std1)
+            epsilon = weight_std_1.new_zeros(*weight_std_1.size()).normal_()
+            print("epsilon", epsilon)
+            weight_diff_1 = epsilon*weight_std_1
+            weight_std_2 = torch.exp(self.weight_std2)
+            epsilon = weight_std_2.new_zeros(*weight_std_2.size()).normal_()
+            weight_diff_2 = epsilon*weight_std_2
+            return weight_diff_1, weight_diff_2
+        return 0, 0
+
+    def kl_divergence(self):
+        kl = 0
+        theta_mean = torch.cat([self.weight_mean1, self.weight_mean2.t()], -1)
+        theta_std = torch.cat([self.weight_std1, self.weight_std2.t()], -1)
+        kl += torch.mean(theta_mean ** 2. - theta_std * 2. + torch.exp(theta_std * 2)) / 2.
+        # kl += torch.mean(theta_mean ** 2. - theta_mean * 2. + theta_std ** 2 + 2 * torch.log(theta_std)) / 2.
+        return kl
+
+    def forward(self, inp):
+        ##### positionwise feed-forward
+        # print("inp.size(): ", inp.size())
+        self.weight1 = self.weight_mean1*1.
+        self.weight2 = self.weight_mean2*1.
+        weight1_diff, weight2_diff = self.sample_weight_diff()
+        self.weight1 += weight1_diff
+        self.weight2 += weight2_diff
+        # print("weight1_size:", self.weight1.size())
+        # print("weight2_size:", self.weight2.size())
+        layer1_out = F.linear(inp, self.weight1)
+        # print("layer1_out_size:", layer1_out.size())
+        layer2_out = F.linear(F.relu(layer1_out) ,self.weight2)
+        # print("layer2_out_size:", layer2_out.size())
+
+        ##### residual connection + layer normalization
+        output = self.layer_norm(inp + layer2_out)
+
+        kl = self.kl_divergence()
+
+        return output, kl
 
 
 class MultiHeadAttn(nn.Module):
@@ -141,11 +209,9 @@ class RelMultiHeadAttn(MultiHeadAttn):
 
             w_head_q = w_head_q[-qlen:]
         else:
-            # generate query, key, value about dec_input by linear transform
             w_heads = self.qkv_net(w)
             r_heads = self.qkv_net(r)
 
-            # split the query, key, value.
             w_head_q, w_head_k, w_head_v = torch.chunk(w_heads, 3, dim=-1)
             r_head_q, r_head_k, r_head_v = torch.chunk(r_heads, 3, dim=-1)
 
@@ -163,9 +229,7 @@ class RelMultiHeadAttn(MultiHeadAttn):
         AC = torch.einsum('ibnd,jbnd->ijbn', (rw_head_q, w_head_k))
 
         rr_head_q = w_head_q + r_head_q[-1]
-        # i: num_word, j: num_pos, b: batch, n: n_heads, d: d_heads.
         BD = torch.einsum('ibnd,jnd->ijbn', (rr_head_q, r_head_k))
-        # change [word_len, word_len + 1, batch_size, num_heads] to [word_len, word_len, batch_size, num_heads]
         BD = _rel_shift(BD)
 
         # [qlen x klen x bsz x n_head]
@@ -206,28 +270,25 @@ class RelDecoderLayer(nn.Module):
                  **kwargs):
         super(RelDecoderLayer, self).__init__()
 
-        self.dec_attn = MultiHeadAttn(n_head, d_model, d_head, dropouta,
+        self.dec_attn = RelMultiHeadAttn(n_head, d_model, d_head, dropouta,
                                          **kwargs)
-        self.pos_ff = PositionwiseFF(d_model, d_inner, dropoutf)
+        self.pos_ff = BayesPositionwiseFF(d_model, d_inner, dropoutf)
 
     def forward(self, dec_inp, pos_emb, dec_attn_mask=None, mems=None):
 
-        output = self.dec_attn(dec_inp, attn_mask=dec_attn_mask,
+        output = self.dec_attn(dec_inp, pos_emb, attn_mask=dec_attn_mask,
                                mems=mems)
-        output = self.pos_ff(output)
+        output, kl = self.pos_ff(output)
 
-        return output
+        return output, kl
 
 
-class TransformerLM(nn.Module):
-    """
-
-    """
+class AWDTransformerXL(nn.Module):
     def __init__(self, n_token, n_layer, n_head, d_model, d_head, d_inner,
                  dropoute, dropouti, dropouta, dropoutf, dropouth, dropouto,
                  tie_weight=True, tgt_len=None, ext_len=0, mem_len=0,
                  clamp_len=-1):
-        super(TransformerLM, self).__init__()
+        super(AWDTransformerXL, self).__init__()
         self.n_token = n_token
         self.d_model = d_model
         self.n_head = n_head
@@ -312,7 +373,7 @@ class TransformerLM(nn.Module):
         return new_mems
 
     def forward(self, dec_inp, target, *mems, return_h=False):
-        print(dec_inp.size(), target.size())
+        # print("dec_inp.size(), target.size(): ", dec_inp.size(), target.size())
         if not mems: mems = self.init_mems()
 
         qlen, bsz = dec_inp.size()
@@ -330,8 +391,7 @@ class TransformerLM(nn.Module):
         hids = []
 
         # relative pos embedding
-        print(klen)
-        pos_seq = torch.arange(1, klen+1, 1.0, device=word_emb.device)
+        pos_seq = torch.arange(klen, -1, -1.0, device=word_emb.device)
         if self.clamp_len > 0:
             pos_seq.clamp_(max=self.clamp_len)
         pos_emb = self.pos_emb(pos_seq)
@@ -341,6 +401,7 @@ class TransformerLM(nn.Module):
         pos_emb = self.locked_drop_i(pos_emb)
 
         # compute hids
+        kl_loss = 0
         for i, layer in enumerate(self.layers):
             # save the input to each layer for memory
             hids.append(core_out)
@@ -348,9 +409,9 @@ class TransformerLM(nn.Module):
             # current memory
             mems_i = mems[i] if mems is not None else None
 
-            # core_out = layer(core_out, pos_emb, dec_attn_mask=dec_attn_mask,
-            #                  mems=mems_i)
-            core_out = layer(core_out, pos_emb, dec_attn_mask=dec_attn_mask)
+            core_out, kl = layer(core_out, pos_emb, dec_attn_mask=dec_attn_mask,
+                             mems=mems_i)
+            kl_loss += kl
 
             # apply dropouth, if it is not the last layer
             if i < len(self.layers) - 1:
@@ -359,11 +420,14 @@ class TransformerLM(nn.Module):
         # update memory
         new_mems = self._update_mems(hids, mems, mlen, qlen)
 
+        # print("core_out.size(): ", core_out.size(), -target.size(0))
         # compute loss
         hidden = core_out[-target.size(0):]
         pred_hid = self.locked_drop_o(hidden)
+        # print("pred_hid.size(): ", pred_hid.size())
 
         logit = self.out_layer(pred_hid)
+        # print("logit.size(): ", logit.size())
         if hasattr(self, 'temperature'):
             logit = logit / self.temperature
         loss = -F.log_softmax(logit, dim=-1) \
@@ -378,6 +442,9 @@ class TransformerLM(nn.Module):
         # only return the last-layer hidden to reduce multi-gpu communication
         if return_h:
             ret = ret + [hidden]
-
+        # print(kl_loss)
+        kl_loss = kl_loss / dec_inp.size(0) * dec_inp.size(1)
+        print("dec_inp.size:", dec_inp.size())
+        ret = ret + [kl_loss]
         return ret
 

@@ -350,6 +350,7 @@ def main():
         corpus = Corpus('data/ptb', train_batch_size=16, valid_batch_size=16, test_batch_size=1)
         training_data, validation_data, testing_data = corpus.train_loader, corpus.valid_loader, corpus.test_loader
         vocab_size = len(corpus.voc)
+        # print("corpus.train_data.n_sents:",corpus.train_data.n_sents)
         max_length = corpus.max_length
         print("[Data] train_length:", len(corpus.train_data), ", val_length:", len(corpus.valid_data),
               ", test_length:", len(corpus.test_data), ", vocab_size:", vocab_size, ", max_length:", max_length)

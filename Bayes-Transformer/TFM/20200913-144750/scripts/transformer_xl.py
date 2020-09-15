@@ -58,7 +58,7 @@ class PositionwiseFF(nn.Module):
 
         self.layer_norm = nn.LayerNorm(d_model)
 
-    def forward(self, inp, display=None):
+    def forward(self, inp):
         ##### positionwise feed-forward
         core_out = self.CoreNet(inp)
 
@@ -84,20 +84,20 @@ class BayesPositionwiseFF(nn.Module):
     def reset_parameters(self):
         stdm = 1. / math.sqrt(self.d_model+1)
         stdi = 1. / math.sqrt(self.d_inner+1)
-        # print("stdm, stdi", stdm, stdi)
+        print("stdm, stdi", stdm, stdi)
         self.weight_mean1.data.uniform_(-stdm, stdm)
         self.weight_mean2.data.uniform_(-stdi, stdi)
-        # print("log.stdm, stdi", 2*np.log(stdm), np.log(stdm))
+        print("log.stdm, stdi", 2*np.log(stdm), np.log(stdm))
         self.weight_std1.data.uniform_(2*np.log(stdm), np.log(stdm))
         self.weight_std2.data.uniform_(2*np.log(stdi), np.log(stdi))
 
     def sample_weight_diff(self):
         if self.training:
-            weight_std_1 = torch.exp(self.weight_std1)
+            weight_std_1 = torch.log(self.weight_std1)
             epsilon = weight_std_1.new_zeros(*weight_std_1.size()).normal_()
             # print("epsilon", epsilon)
             weight_diff_1 = epsilon*weight_std_1
-            weight_std_2 = torch.exp(self.weight_std2)
+            weight_std_2 = torch.log(self.weight_std2)
             epsilon = weight_std_2.new_zeros(*weight_std_2.size()).normal_()
             weight_diff_2 = epsilon*weight_std_2
             return weight_diff_1, weight_diff_2
@@ -111,15 +111,12 @@ class BayesPositionwiseFF(nn.Module):
         # kl += torch.mean(theta_mean ** 2. - theta_mean * 2. + theta_std ** 2 + 2 * torch.log(theta_std)) / 2.
         return kl
 
-    def forward(self, inp, display=None):
+    def forward(self, inp):
         ##### positionwise feed-forward
         # print("inp.size(): ", inp.size())
         self.weight1 = self.weight_mean1*1.
         self.weight2 = self.weight_mean2*1.
         weight1_diff, weight2_diff = self.sample_weight_diff()
-        if display == True:
-            print("weight_diff1: ", weight1_diff)
-            print("weight_diff2: ", weight2_diff)
         self.weight1 += weight1_diff
         self.weight2 += weight2_diff
         # print("weight1_size:", self.weight1.size())
@@ -279,11 +276,11 @@ class RelDecoderLayer(nn.Module):
                                          **kwargs)
         self.pos_ff = BayesPositionwiseFF(d_model, d_inner, dropoutf)
 
-    def forward(self, dec_inp, pos_emb, dec_attn_mask=None, mems=None, display=None):
+    def forward(self, dec_inp, pos_emb, dec_attn_mask=None, mems=None):
 
         output = self.dec_attn(dec_inp, pos_emb, attn_mask=dec_attn_mask,
                                mems=mems)
-        output, kl = self.pos_ff(output, display=display)
+        output, kl = self.pos_ff(output)
 
         return output, kl
 
@@ -377,7 +374,7 @@ class AWDTransformerXL(nn.Module):
 
         return new_mems
 
-    def forward(self, dec_inp, target, *mems, return_h=False, display=None):
+    def forward(self, dec_inp, target, *mems, return_h=False):
         # print("dec_inp.size(), target.size(): ", dec_inp.size(), target.size())
         if not mems: mems = self.init_mems()
 
@@ -415,7 +412,7 @@ class AWDTransformerXL(nn.Module):
             mems_i = mems[i] if mems is not None else None
 
             core_out, kl = layer(core_out, pos_emb, dec_attn_mask=dec_attn_mask,
-                             mems=mems_i, display=display)
+                             mems=mems_i)
             kl_loss += kl
 
             # apply dropouth, if it is not the last layer

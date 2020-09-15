@@ -14,38 +14,36 @@ from utils import batchify, get_batch, create_exp_dir, get_logger
 parser = argparse.ArgumentParser(description='PyTorch PennTreeBank Language Model')
 parser.add_argument('--work_dir', default='TFM', type=str,
                     help='experiment directory.')
-parser.add_argument('--data', type=str, default='../TransformerLM/include/data/ptb',
-                    help='location of the data corpus')
-parser.add_argument('--data_version', type=int, default=0,
+parser.add_argument('--data', type=str, default='data/penn/',
                     help='location of the data corpus')
 
 # model related
-parser.add_argument('--n_layer', type=int, default=6,
+parser.add_argument('--n_layer', type=int, default=16,
                     help='number of total layers')
-parser.add_argument('--n_head', type=int, default=8,
+parser.add_argument('--n_head', type=int, default=10,
                     help='number of heads')
-parser.add_argument('--d_head', type=int, default=64,
+parser.add_argument('--d_head', type=int, default=38,
                     help='head dimension')
-parser.add_argument('--d_model', type=int, default=512,
+parser.add_argument('--d_model', type=int, default=380,
                     help='model dimension')
-parser.add_argument('--d_inner', type=int, default=2048,
+parser.add_argument('--d_inner', type=int, default=900,
                     help='inner dimension in FF')
 parser.add_argument('--not_tied', action='store_true',
                     help='do not tie the word embedding and softmax weights')
 parser.add_argument('--clamp_len', type=int, default=-1,
                     help='clamp length')
 
-parser.add_argument('--dropoute', type=float, default=0.0,
+parser.add_argument('--dropoute', type=float, default=0.2,
                     help='dropout to remove words from embedding layer')
-parser.add_argument('--dropouti', type=float, default=0.0,
+parser.add_argument('--dropouti', type=float, default=0.6,
                     help='dropout for input embedding vectors')
-parser.add_argument('--dropouta', type=float, default=0.0,
+parser.add_argument('--dropouta', type=float, default=0.2,
                     help='dropout applied to multi-head attention layers')
-parser.add_argument('--dropoutf', type=float, default=0.0,
+parser.add_argument('--dropoutf', type=float, default=0.2,
                     help='dropout applied to positionwise ff layers')
 parser.add_argument('--dropouth', type=float, default=0.0,
                     help='dropout applied to decoder layer output')
-parser.add_argument('--dropouto', type=float, default=0.0,
+parser.add_argument('--dropouto', type=float, default=0.5,
                     help='dropout applied to the output (before the logit)')
 
 # initialization
@@ -83,9 +81,9 @@ parser.add_argument('--beta', type=float, default=0.1,
 parser.add_argument('--wdecay', type=float, default=1.2e-6,
                     help='weight decay applied to all weights')
 
-parser.add_argument('--std_epochs', type=int, default=10,
+parser.add_argument('--std_epochs', type=int, default=125,
                     help='number of epochs with standard training')
-parser.add_argument('--ema_epochs', type=int, default=0,
+parser.add_argument('--ema_epochs', type=int, default=50,
                     help='number of epochs with ema of params')
 parser.add_argument('--decay_epochs', type=int, default=-1,
                     help='number of epochs with params decay')
@@ -165,40 +163,22 @@ def model_load(fn):
 
 import os
 import hashlib
+fn = os.path.join(
+    args.data,
+    'corpus.{}.data'.format(hashlib.md5(args.data.encode()).hexdigest()))
+if os.path.exists(fn):
+    logging('Loading cached dataset...')
+    corpus = torch.load(fn)
+else:
+    logging('Producing dataset...')
+    corpus = data.Corpus(args.data)
+    torch.save(corpus, fn)
 
 eval_batch_size = 10
 test_batch_size = 1
-
-# fn = os.path.join(
-#     args.data,
-#     'corpus.{}.data'.format(hashlib.md5(args.data.encode()).hexdigest()))
-# if os.path.exists(fn):
-#     logging('Loading cached dataset...')
-#     corpus = torch.load(fn)
-# else:
-#     logging('Producing dataset...')
-#     corpus = data.Corpus(args.data, args.data_version, eval_batch_size, test_batch_size)
-#     torch.save(corpus, fn)
-
-logging('Producing dataset...')
-corpus = data.Corpus(args.data, args.data_version, eval_batch_size, test_batch_size)
-# torch.save(corpus, fn)
-
-
-train_data = batchify(corpus.train_data, args.batch_size, args)
-if args.data_version == 0:
-    val_data = batchify(corpus.valid_data, eval_batch_size, args)
-    test_data = batchify(corpus.test_data, test_batch_size, args)
-    pass
-elif args.data_version == 1 or 2:
-    val_data = corpus.valid_loader
-    test_data = corpus.valid_loader
-    pass
-else:
-    val_data = None
-    test_data = None
-    pass
-pass
+train_data = batchify(corpus.train, args.batch_size, args)
+val_data = batchify(corpus.valid, eval_batch_size, args)
+test_data = batchify(corpus.test, test_batch_size, args)
 
 args.max_decay_step = (train_data.size(0) + args.bptt -1) // args.bptt * args.decay_epochs
 
@@ -315,14 +295,8 @@ logging('=' * 100)
 ###############################################################################
 # Training code
 ###############################################################################
-# Statistics of correct words and total words in current batch.
-def words_count(words):
-    # count the words in current batchs that id is not PAD.
-    non_pad_mask = words.ne(0)
-    n_word = non_pad_mask.sum().item()
-    return n_word
 
-def evaluate(data_source, batch_size=10, eval_bptt=50):
+def evaluate(data_source, batch_size=10, eval_bptt=10):
     # Turn on evaluation mode which disables dropout.
     model.eval()
 
@@ -337,38 +311,22 @@ def evaluate(data_source, batch_size=10, eval_bptt=50):
         eval_ext_len = args.ext_len
         model.reset_length(eval_bptt, eval_ext_len, eval_mem_len)
 
-    mems = tuple()
-    total_words = 0
     total_loss = 0
+    mems = tuple()
+    for i in range(0, data_source.size(0) - 1, eval_bptt):
+        data, target = get_batch(data_source, i, args, seq_len=eval_bptt,
+                                 ext_len=eval_ext_len)
 
-    if args.data_version == 0:
-        for i in range(0, data_source.size(0) - 1, eval_bptt):
-            data, target = get_batch(data_source, i, args, seq_len=eval_bptt,
-                                     ext_len=eval_ext_len)
-            # print("data.size:" + str(data.size()) + "  target.size:" + str(target.size()))
-            ret = model(data, target, *mems, return_h=True)
-            raw_loss, mems, last_hid = ret[0], ret[1:-1], ret[-1]
-            raw_loss = raw_loss.mean()
-            total_loss += target.size(0) * raw_loss.item()
-            total_words = len(data_source)
-        pass
-    elif args.data_version == 1 or 2:
-        for _, (inputs, targets, sent_lens) in enumerate(data_source):
-            # calculate loss and accuracy.
-            # print("inputs.size:" + str(inputs.size()) + "  targets.size:" + str(targets.size()))
-            ret = model(inputs, targets[1:, :], *mems, return_h=True, data_version=args.data_version, sent_lens=sent_lens)
-            raw_loss, mems, last_hid = ret[0], ret[1:-1], ret[-1]
-            n_words = words_count(inputs)
-            total_loss += n_words * raw_loss.item()
-            total_words += n_words
-            pass
-    pass
+        ret = model(data, target, *mems, return_h=True)
+        raw_loss, mems, last_hid, _ = ret[0], ret[1:-2], ret[-2], ret[-1]
+        raw_loss = raw_loss.mean()
+        total_loss += target.size(0) * raw_loss.item()
 
     # Switch back to the training mode
     model.reset_length(args.bptt, args.ext_len, args.mem_len)
     model.train()
 
-    return total_loss / total_words
+    return total_loss / len(data_source)
 
 def train():
     # Turn on training mode which enables dropout.
@@ -398,19 +356,17 @@ def train():
                 scheduler.step()
 
         model.train()
-        # print(train_data.size(), seq_len)
         data, target = get_batch(train_data, i, args, seq_len=seq_len)
 
         optimizer.zero_grad()
 
         ##### Forward
-        # print(data, target)
         ret = model(data, target, *mems, return_h=True)
-        raw_loss, mems, last_hid = ret[0], ret[1:-1], ret[-1]
+        raw_loss, mems, last_hid, kl_loss = ret[0], ret[1:-2], ret[-2], ret[-1]
         raw_loss = raw_loss.mean()
 
-        loss = raw_loss
-
+        loss = raw_loss + kl_loss
+        # print("raw_loss, kl_loss:", raw_loss, kl_loss)
         # Activiation Regularization
         if args.alpha:
             loss = loss + args.alpha * last_hid.pow(2).mean()
@@ -420,6 +376,12 @@ def train():
             loss = loss + args.beta * (last_hid[1:] - last_hid[:-1]).pow(2).mean()
 
         ##### Backward
+        # print("data.size:", data.size())
+        # for i in range(args.n_layer):
+        #     kl_loss = kl_loss + model.layers[i].pos_ff.kl_divergence()/(data.size[0]*args.batch_size)
+        #     pass
+        # print("ongoing")
+        # kl_loss = kl_loss + model.layers()[0].pos_ff.kl_divergence() / (data.size[0] * args.batch_size)
         loss.backward()
 
         # `clip_grad_norm` helps prevent the exploding gradient problem
@@ -447,10 +409,10 @@ def train():
             cur_loss = total_loss / args.log_interval
             elapsed = time.time() - start_time
             log_str = '| epoch {:3d} | {:5d}/{:5d} batches | lr {:.4g} ' \
-                      '| ms/batch {:5.2f} | loss {:5.2f} | ppl {:8.2f} ' \
-                      '| bpt {:8.3f} '.format(epoch, batch,
+                      '| ms/batch {:5.2f} | loss {:5.2f} | kl_loss {:5.2f} ' \
+                      '| ppl {:8.2f} | bpt {:8.3f} '.format(epoch, batch,
                 len(train_data) // args.bptt, optimizer.param_groups[0]['lr'],
-                elapsed * 1000 / args.log_interval, cur_loss,
+                elapsed * 1000 / args.log_interval, cur_loss, kl_loss,
                 math.exp(cur_loss), cur_loss / math.log(2))
             logging(log_str)
             total_loss = 0
@@ -540,9 +502,8 @@ model_load(args.save)
 model.temperature = 1.08
 
 # Run on test data.
-test_bptt = 1
+test_bptt = 10
 test_loss = evaluate(test_data, test_batch_size, test_bptt)
-
 logging('=' * 89)
 logging('| End of training | test loss {:5.2f} '
         '| test ppl {:8.2f} | test bpt {:8.3f}'.format(

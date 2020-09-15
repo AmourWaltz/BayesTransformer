@@ -1,7 +1,7 @@
-Producing dataset...
+Loading cached dataset...
 ====================================================================================================
-    - work_dir : TFM/20200810-191813
-    - data : ../TransformerLM/include/data/fds
+    - work_dir : TFM/20200913-144750
+    - data : data/penn/
     - n_layer : 16
     - n_head : 10
     - d_head : 38
@@ -10,11 +10,11 @@ Producing dataset...
     - not_tied : False
     - clamp_len : -1
     - dropoute : 0.2
-    - dropouti : 0.2
+    - dropouti : 0.6
     - dropouta : 0.2
     - dropoutf : 0.2
-    - dropouth : 0.2
-    - dropouto : 0.2
+    - dropouth : 0.0
+    - dropouto : 0.5
     - init : normal
     - emb_init : normal
     - init_range : 0.1
@@ -29,9 +29,9 @@ Producing dataset...
     - alpha : 0.2
     - beta : 0.1
     - wdecay : 1.2e-06
-    - std_epochs : 10
-    - ema_epochs : 0
-    - decay_epochs : 10
+    - std_epochs : 125
+    - ema_epochs : 50
+    - decay_epochs : 125
     - mu : -1
     - epoch_ema : False
     - ema_lr_mult : 0.5
@@ -42,16 +42,16 @@ Producing dataset...
     - seed : 1111
     - cuda : False
     - log_interval : 200
-    - save : TFM/20200810-191813/model.pt
+    - save : TFM/20200913-144750/model.pt
     - resume : 
     - debug : False
     - when : []
     - tied : True
-    - epochs : 10
-    - max_decay_step : 344690
-    - total_params : 46884779
-    - nonemb_params : 20300359
-    - emb_params : 26584420
+    - epochs : 175
+    - max_decay_step : 166000
+    - total_params : 34963920
+    - nonemb_params : 31163920
+    - emb_params : 3800000
 ====================================================================================================
 -----------------------------------------------------------------------------------------
 Exiting from training early

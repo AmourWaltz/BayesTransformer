@@ -295,6 +295,54 @@ logging('=' * 100)
 ###############################################################################
 # Training code
 ###############################################################################
+# Calculate cross entropy loss, apply label smoothing if needed.
+def loss_calculation(pred, gold, sent_lens, smoothing=False):
+    vocab_size = pred.size()[-1]
+    if smoothing:
+        eps = 0.1
+        # transpose targets dataset and cut first line
+        pred = pred[:, 1:, :]
+        # transform gold.size(): (lens, batch) to (batch, lens)
+        gold = gold.t()[:, 1:]
+
+        # transform pred.size(): (batch, lens, vocab) to (batch * lens, vocab)
+        # transform gold.size(): (batch, lens) to (batch * lens)
+        # print(gold.size(), pred.size())
+        gold = gold.contiguous().view(-1)
+        pred = pred.contiguous().view(-1, vocab_size)
+        # print(gold.size(), pred.size())
+
+        one_hot = torch.zeros_like(pred).scatter(1, gold.view(-1, 1), 1)
+
+        # torch.cuda.available, cuda cannot convert Tensor to numpy()
+        if torch.cuda.is_available():
+            one_hot = one_hot.cpu().numpy() * (1 - eps) + (1 - one_hot.cpu().numpy()) * eps / (vocab_size - 1)
+            pass
+        else:
+            one_hot = one_hot.numpy() * (1 - eps) + (1 - one_hot.numpy()) * eps / (vocab_size - 1)
+            pass
+        pass
+        log_prb = func.log_softmax(pred, dim=1)
+
+        non_pad_mask = gold.ne(PAD)
+        if torch.cuda.is_available():
+            loss = -(torch.tensor(one_hot).cuda() * log_prb).sum(dim=1)
+            pass
+        else:
+            loss = -(torch.tensor(one_hot) * log_prb).sum(dim=1)
+            pass
+        pass
+        loss = loss.masked_select(non_pad_mask).mean()
+        pass
+    else:
+        # pack_padded_sequence() to ignore the paddings.
+        pred_packed = pack_padded_sequence(pred.transpose(0, 1), sent_lens)[0]
+        targets_packed = pack_padded_sequence(gold, sent_lens)[0]
+        loss = criterion(pred_packed.view(-1, vocab_size), targets_packed.view(-1))
+        pass
+    pass
+
+    return loss
 
 def evaluate(data_source, batch_size=10, eval_bptt=10):
     # Turn on evaluation mode which disables dropout.
@@ -318,7 +366,7 @@ def evaluate(data_source, batch_size=10, eval_bptt=10):
                                  ext_len=eval_ext_len)
 
         ret = model(data, target, *mems, return_h=True)
-        raw_loss, mems, last_hid = ret[0], ret[1:-1], ret[-1]
+        raw_loss, mems, last_hid, _ = ret[0], ret[1:-2], ret[-2], ret[-1]
         raw_loss = raw_loss.mean()
         total_loss += target.size(0) * raw_loss.item()
 
@@ -365,8 +413,10 @@ def train():
         raw_loss, mems, last_hid, kl_loss = ret[0], ret[1:-2], ret[-2], ret[-1]
         raw_loss = raw_loss.mean()
 
+        print(model.parameters)
+
         loss = raw_loss + kl_loss
-        print("raw_loss, kl_loss:", raw_loss, kl_loss)
+        # print("raw_loss, kl_loss:", raw_loss, kl_loss)
         # Activiation Regularization
         if args.alpha:
             loss = loss + args.alpha * last_hid.pow(2).mean()

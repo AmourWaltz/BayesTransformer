@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from adaptive_softmax import AdaptiveLogSoftmax
 from embed_regularize import embedded_dropout
 from locked_dropout import LockedDropout
+from torch.nn.utils.rnn import pack_padded_sequence
 
 
 def _rel_shift(x, zero_triu=False):
@@ -98,7 +99,7 @@ class MultiHeadAttn(nn.Module):
 
         self.scale = 1 / (d_head ** 0.5)
 
-    def forward(self, h, attn_mask=None, mems=None):
+    def forward(self, h, attn_mask=None, pad_mask=None, mems=None):
         ##### multihead attention
         # [hlen x bsz x n_head x d_head]
         head_q, head_k, head_v = torch.chunk(self.qkv_net(h), 3, -1)
@@ -109,11 +110,30 @@ class MultiHeadAttn(nn.Module):
         # [qlen x klen x bsz x n_head]
         attn_score = torch.einsum('ibnd,jbnd->ijbn', (head_q, head_k))
         attn_score.mul_(self.scale)
+        # print("attn_score.size: ", attn_score.size())
+        # print("dec_attn_mask.size: ", attn_mask.size(), pad_mask.size())
+
         if attn_mask is not None and attn_mask.any().item():
             if attn_mask.dim() == 2:
                 attn_score.masked_fill_(attn_mask[None, :, :, None], -float('inf'))
             elif attn_mask.dim() == 3:
                 attn_score.masked_fill_(attn_mask[:, :, :, None], -float('inf'))
+                # print("dec_attn_mask.size: ", attn_mask[:, :, :, None].size())
+                # print("dec_attn_mask.size: ", attn_mask)
+
+        if not self.training:
+            # print("attn_mask: ", attn_mask[:, :, 0])
+            # print("pad_mask: ", pad_mask[:, :, 0])
+            # print("attn_mask.size: ", attn_mask.size())
+            # print("pad_mask.size: ", pad_mask.size())
+            # dec_attn_mask = torch.gt(attn_mask + pad_mask, 0)
+            # print("dec_attn_mask.size: ", attn_mask.size())
+            # print("dec_attn_mask: ", dec_attn_mask[:, :, 0])
+            # print("attn_score.size: ", attn_score.size())
+            attn_score.masked_fill_(pad_mask[:, :, :, None], -float('inf'))
+            pass
+        else:
+            pass
 
         # [qlen x klen x bsz x n_head]
         attn_prob = F.softmax(attn_score, dim=1)
@@ -241,8 +261,8 @@ class RelDecoderLayer(nn.Module):
                                       **kwargs)
         self.pos_ff = PositionwiseFF(d_model, d_inner, dropoutf)
 
-    def forward(self, dec_inp, pos_emb, dec_attn_mask=None, mems=None):
-        output = self.dec_attn(dec_inp, attn_mask=dec_attn_mask,
+    def forward(self, dec_inp, pos_emb, dec_attn_mask=None, pad_mask=None, mems=None):
+        output = self.dec_attn(dec_inp, attn_mask=dec_attn_mask, pad_mask=pad_mask,
                                mems=mems)
         output = self.pos_ff(output)
 
@@ -337,9 +357,10 @@ class AWDTransformerXL(nn.Module):
 
         return new_mems
 
-    def forward(self, dec_inp, target, *mems, return_h=False):
+    def forward(self, dec_inp, target, *mems, return_h=False, data_version=0, sent_lens=None):
         # print("dec_inp, target: ", dec_inp.size(), target.size())
         dec_inp = dec_inp[-target.size(0):]
+        # print("dec_inp", dec_inp.size())
 
         if not mems: mems = self.init_mems()
 
@@ -354,11 +375,26 @@ class AWDTransformerXL(nn.Module):
         klen = mlen + qlen
         dec_attn_mask = torch.triu(
             word_emb.new_ones(qlen, klen), diagonal=1 + mlen).bool()[:, :, None]
+        # print("dec_attn_mask.size: ", dec_attn_mask[:, :, 0].size())
+        # print("dec_attn_mask: ", dec_attn_mask[:, :, 0])
+
+        if not self.training:
+            len_q = dec_inp.size(0)
+            pad_mask = dec_inp.t().eq(0)
+            # print("pad_mask: ", pad_mask.size(), pad_mask)
+            pad_mask = pad_mask.unsqueeze(1).expand(-1, len_q, -1)
+            pad_mask = pad_mask.transpose(0, 2).transpose(0, 1)
+            # print("pad_mask:", pad_mask.size())
+            # print(pad_mask[:, :, 1])
+            pass
+        else:
+            pad_mask = None
+            pass
 
         hids = []
 
         # relative pos embedding
-        # print("klen: ",klen)
+        # print("klen: ", klen)
         pos_seq = torch.arange(0, klen, 1.0, device=word_emb.device)
         # print("pos_seq: ", pos_seq)
         if self.clamp_len > 0:
@@ -372,7 +408,7 @@ class AWDTransformerXL(nn.Module):
 
         # compute hids
         for i, layer in enumerate(self.layers):
-            start_time = time.time()
+            # start_time = time.time()
             # save the input to each layer for memory
             hids.append(core_out)
 
@@ -380,13 +416,13 @@ class AWDTransformerXL(nn.Module):
             mems_i = mems[i] if mems is not None else None
 
             # print("core_out: ", core_out.size())
-            core_out = layer(core_out, pos_emb, dec_attn_mask=dec_attn_mask)
+            core_out = layer(core_out, pos_emb, dec_attn_mask=dec_attn_mask, pad_mask=pad_mask)
 
             # apply dropouth, if it is not the last layer
             if i < len(self.layers) - 1:
                 core_out = self.locked_drop_h(core_out)
 
-            end_time = time.time()
+            # end_time = time.time()
             # print("decoder time once: ", end_time - start_time)
 
         # update memory
@@ -399,8 +435,17 @@ class AWDTransformerXL(nn.Module):
         logit = self.out_layer(pred_hid)
         if hasattr(self, 'temperature'):
             logit = logit / self.temperature
-        loss = -F.log_softmax(logit, dim=-1) \
-            .gather(2, target.unsqueeze(2)).squeeze(2)
+
+        if self.training or data_version == 0:
+            loss = -F.log_softmax(logit, dim=-1) \
+                .gather(2, target.unsqueeze(2)).squeeze(2)
+            pass
+        else:
+            # print("logit.size:", logit.size())
+            pred_packed = pack_padded_sequence(logit, sent_lens)[0]
+            targets_packed = pack_padded_sequence(target, sent_lens)[0]
+            loss = F.cross_entropy(pred_packed.view(-1, self.n_token), targets_packed.view(-1))
+            pass
 
         ret = [loss]
 
