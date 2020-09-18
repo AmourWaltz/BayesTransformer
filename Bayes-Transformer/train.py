@@ -18,32 +18,32 @@ parser.add_argument('--data', type=str, default='data/penn/',
                     help='location of the data corpus')
 
 # model related
-parser.add_argument('--n_layer', type=int, default=16,
+parser.add_argument('--n_layer', type=int, default=6,
                     help='number of total layers')
-parser.add_argument('--n_head', type=int, default=10,
+parser.add_argument('--n_head', type=int, default=8,
                     help='number of heads')
-parser.add_argument('--d_head', type=int, default=38,
+parser.add_argument('--d_head', type=int, default=64,
                     help='head dimension')
-parser.add_argument('--d_model', type=int, default=380,
+parser.add_argument('--d_model', type=int, default=512,
                     help='model dimension')
-parser.add_argument('--d_inner', type=int, default=900,
+parser.add_argument('--d_inner', type=int, default=2048,
                     help='inner dimension in FF')
 parser.add_argument('--not_tied', action='store_true',
                     help='do not tie the word embedding and softmax weights')
 parser.add_argument('--clamp_len', type=int, default=-1,
                     help='clamp length')
 
-parser.add_argument('--dropoute', type=float, default=0.2,
+parser.add_argument('--dropoute', type=float, default=0.0,
                     help='dropout to remove words from embedding layer')
-parser.add_argument('--dropouti', type=float, default=0.6,
+parser.add_argument('--dropouti', type=float, default=0.0,
                     help='dropout for input embedding vectors')
-parser.add_argument('--dropouta', type=float, default=0.2,
+parser.add_argument('--dropouta', type=float, default=0.0,
                     help='dropout applied to multi-head attention layers')
-parser.add_argument('--dropoutf', type=float, default=0.2,
+parser.add_argument('--dropoutf', type=float, default=0.0,
                     help='dropout applied to positionwise ff layers')
 parser.add_argument('--dropouth', type=float, default=0.0,
                     help='dropout applied to decoder layer output')
-parser.add_argument('--dropouto', type=float, default=0.5,
+parser.add_argument('--dropouto', type=float, default=0.0,
                     help='dropout applied to the output (before the logit)')
 
 # initialization
@@ -81,9 +81,9 @@ parser.add_argument('--beta', type=float, default=0.1,
 parser.add_argument('--wdecay', type=float, default=1.2e-6,
                     help='weight decay applied to all weights')
 
-parser.add_argument('--std_epochs', type=int, default=125,
+parser.add_argument('--std_epochs', type=int, default=5,
                     help='number of epochs with standard training')
-parser.add_argument('--ema_epochs', type=int, default=50,
+parser.add_argument('--ema_epochs', type=int, default=0,
                     help='number of epochs with ema of params')
 parser.add_argument('--decay_epochs', type=int, default=-1,
                     help='number of epochs with params decay')
@@ -295,56 +295,8 @@ logging('=' * 100)
 ###############################################################################
 # Training code
 ###############################################################################
-# Calculate cross entropy loss, apply label smoothing if needed.
-def loss_calculation(pred, gold, sent_lens, smoothing=False):
-    vocab_size = pred.size()[-1]
-    if smoothing:
-        eps = 0.1
-        # transpose targets dataset and cut first line
-        pred = pred[:, 1:, :]
-        # transform gold.size(): (lens, batch) to (batch, lens)
-        gold = gold.t()[:, 1:]
 
-        # transform pred.size(): (batch, lens, vocab) to (batch * lens, vocab)
-        # transform gold.size(): (batch, lens) to (batch * lens)
-        # print(gold.size(), pred.size())
-        gold = gold.contiguous().view(-1)
-        pred = pred.contiguous().view(-1, vocab_size)
-        # print(gold.size(), pred.size())
-
-        one_hot = torch.zeros_like(pred).scatter(1, gold.view(-1, 1), 1)
-
-        # torch.cuda.available, cuda cannot convert Tensor to numpy()
-        if torch.cuda.is_available():
-            one_hot = one_hot.cpu().numpy() * (1 - eps) + (1 - one_hot.cpu().numpy()) * eps / (vocab_size - 1)
-            pass
-        else:
-            one_hot = one_hot.numpy() * (1 - eps) + (1 - one_hot.numpy()) * eps / (vocab_size - 1)
-            pass
-        pass
-        log_prb = func.log_softmax(pred, dim=1)
-
-        non_pad_mask = gold.ne(PAD)
-        if torch.cuda.is_available():
-            loss = -(torch.tensor(one_hot).cuda() * log_prb).sum(dim=1)
-            pass
-        else:
-            loss = -(torch.tensor(one_hot) * log_prb).sum(dim=1)
-            pass
-        pass
-        loss = loss.masked_select(non_pad_mask).mean()
-        pass
-    else:
-        # pack_padded_sequence() to ignore the paddings.
-        pred_packed = pack_padded_sequence(pred.transpose(0, 1), sent_lens)[0]
-        targets_packed = pack_padded_sequence(gold, sent_lens)[0]
-        loss = criterion(pred_packed.view(-1, vocab_size), targets_packed.view(-1))
-        pass
-    pass
-
-    return loss
-
-def evaluate(data_source, batch_size=10, eval_bptt=10):
+def evaluate(data_source, batch_size=10, eval_bptt=50):
     # Turn on evaluation mode which disables dropout.
     model.eval()
 
@@ -412,8 +364,6 @@ def train():
         ret = model(data, target, *mems, return_h=True)
         raw_loss, mems, last_hid, kl_loss = ret[0], ret[1:-2], ret[-2], ret[-1]
         raw_loss = raw_loss.mean()
-
-        print(model.parameters)
 
         loss = raw_loss + kl_loss
         # print("raw_loss, kl_loss:", raw_loss, kl_loss)
@@ -552,7 +502,7 @@ model_load(args.save)
 model.temperature = 1.08
 
 # Run on test data.
-test_bptt = 10
+test_bptt = 50
 test_loss = evaluate(test_data, test_batch_size, test_bptt)
 logging('=' * 89)
 logging('| End of training | test loss {:5.2f} '

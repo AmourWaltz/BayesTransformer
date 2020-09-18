@@ -58,14 +58,14 @@ class PositionwiseFF(nn.Module):
 
         self.layer_norm = nn.LayerNorm(d_model)
 
-    def forward(self, inp, display=None):
+    def forward(self, inp):
         ##### positionwise feed-forward
         core_out = self.CoreNet(inp)
 
         ##### residual connection + layer normalization
         output = self.layer_norm(inp + core_out)
 
-        return output
+        return output, 0
 
 
 class BayesPositionwiseFF(nn.Module):
@@ -84,22 +84,19 @@ class BayesPositionwiseFF(nn.Module):
     def reset_parameters(self):
         stdm = 1. / math.sqrt(self.d_model+1)
         stdi = 1. / math.sqrt(self.d_inner+1)
-        # print("stdm, stdi", stdm, stdi)
         self.weight_mean1.data.uniform_(-stdm, stdm)
         self.weight_mean2.data.uniform_(-stdi, stdi)
-        # print("log.stdm, stdi", 2*np.log(stdm), np.log(stdm))
-        self.weight_std1.data.uniform_(2*np.log(stdm), np.log(stdm))
-        self.weight_std2.data.uniform_(2*np.log(stdi), np.log(stdi))
+        self.weight_std1.data.uniform_(2*np.log(stdm), 1*np.log(stdm))
+        self.weight_std2.data.uniform_(2*np.log(stdi), 1*np.log(stdi))
 
     def sample_weight_diff(self):
         if self.training:
-            weight_std_1 = torch.exp(self.weight_std1)
-            epsilon = weight_std_1.new_zeros(*weight_std_1.size()).normal_()
-            # print("epsilon", epsilon)
-            weight_diff_1 = epsilon*weight_std_1
-            weight_std_2 = torch.exp(self.weight_std2)
-            epsilon = weight_std_2.new_zeros(*weight_std_2.size()).normal_()
-            weight_diff_2 = epsilon*weight_std_2
+            weight_lgstd_1 = torch.exp(self.weight_std1)
+            epsilon = weight_lgstd_1.new_zeros(*weight_lgstd_1.size()).normal_()
+            weight_diff_1 = epsilon*weight_lgstd_1
+            weight_lgstd_2 = torch.exp(self.weight_std2)
+            epsilon = weight_lgstd_2.new_zeros(*weight_lgstd_2.size()).normal_()
+            weight_diff_2 = epsilon*weight_lgstd_2
             return weight_diff_1, weight_diff_2
         return 0, 0
 
@@ -108,31 +105,29 @@ class BayesPositionwiseFF(nn.Module):
         theta_mean = torch.cat([self.weight_mean1, self.weight_mean2.t()], -1)
         theta_std = torch.cat([self.weight_std1, self.weight_std2.t()], -1)
         kl += torch.mean(theta_mean ** 2. - theta_std * 2. + torch.exp(theta_std * 2)) / 2.
-        # kl += torch.mean(theta_mean ** 2. - theta_mean * 2. + theta_std ** 2 + 2 * torch.log(theta_std)) / 2.
+        # kl += torch.mean(theta_mean ** 2. + theta_std ** 2 + 2 * torch.log(theta_std)) / 2.
         return kl
 
-    def forward(self, inp, display=None):
+    def forward(self, inp):
         ##### positionwise feed-forward
         # print("inp.size(): ", inp.size())
         self.weight1 = self.weight_mean1*1.
         self.weight2 = self.weight_mean2*1.
         weight1_diff, weight2_diff = self.sample_weight_diff()
-        if display == True:
-            print("weight_diff1: ", weight1_diff)
-            print("weight_diff2: ", weight2_diff)
         self.weight1 += weight1_diff
         self.weight2 += weight2_diff
         # print("weight1_size:", self.weight1.size())
         # print("weight2_size:", self.weight2.size())
         layer1_out = F.linear(inp, self.weight1)
         # print("layer1_out_size:", layer1_out.size())
-        layer2_out = F.linear(F.relu(layer1_out) ,self.weight2)
+        layer2_out = F.linear(layer1_out, self.weight2)
         # print("layer2_out_size:", layer2_out.size())
 
         ##### residual connection + layer normalization
         output = self.layer_norm(inp + layer2_out)
 
         kl = self.kl_divergence()
+        #kl = 0
 
         return output, kl
 
@@ -271,19 +266,22 @@ class RelMultiHeadAttn(MultiHeadAttn):
 
 
 class RelDecoderLayer(nn.Module):
-    def __init__(self, n_head, d_model, d_head, d_inner, dropoutf, dropouta,
+    def __init__(self, n_head, d_model, d_head, d_inner, dropoutf, dropouta, bayes=None,
                  **kwargs):
         super(RelDecoderLayer, self).__init__()
 
         self.dec_attn = RelMultiHeadAttn(n_head, d_model, d_head, dropouta,
                                          **kwargs)
-        self.pos_ff = BayesPositionwiseFF(d_model, d_inner, dropoutf)
+        if bayes == True:
+            self.pos_ff = BayesPositionwiseFF(d_model, d_inner, dropoutf)
+        else:
+            self.pos_ff = PositionwiseFF(d_model, d_inner, dropoutf)
 
-    def forward(self, dec_inp, pos_emb, dec_attn_mask=None, mems=None, display=None):
+    def forward(self, dec_inp, pos_emb, dec_attn_mask=None, mems=None):
 
         output = self.dec_attn(dec_inp, pos_emb, attn_mask=dec_attn_mask,
                                mems=mems)
-        output, kl = self.pos_ff(output, display=display)
+        output, kl = self.pos_ff(output)
 
         return output, kl
 
@@ -320,11 +318,18 @@ class AWDTransformerXL(nn.Module):
         self.clamp_len = clamp_len
 
         self.layers = nn.ModuleList()
-        for i in range(n_layer):
+        for i in range(1):
             self.layers.append(
                 RelDecoderLayer(
                     n_head, d_model, d_head, d_inner,
-                    dropoutf=dropoutf, dropouta=dropouta)
+                    dropoutf=dropoutf, dropouta=dropouta, bayes=True)
+            )
+
+        for i in range(5):
+            self.layers.append(
+                RelDecoderLayer(
+                    n_head, d_model, d_head, d_inner,
+                    dropoutf=dropoutf, dropouta=dropouta, bayes=False)
             )
 
         self.out_layer = nn.Linear(d_model, n_token)
@@ -377,7 +382,7 @@ class AWDTransformerXL(nn.Module):
 
         return new_mems
 
-    def forward(self, dec_inp, target, *mems, return_h=False, display=None):
+    def forward(self, dec_inp, target, *mems, return_h=False):
         # print("dec_inp.size(), target.size(): ", dec_inp.size(), target.size())
         if not mems: mems = self.init_mems()
 
@@ -415,7 +420,7 @@ class AWDTransformerXL(nn.Module):
             mems_i = mems[i] if mems is not None else None
 
             core_out, kl = layer(core_out, pos_emb, dec_attn_mask=dec_attn_mask,
-                             mems=mems_i, display=display)
+                             mems=mems_i)
             kl_loss += kl
 
             # apply dropouth, if it is not the last layer
@@ -449,7 +454,6 @@ class AWDTransformerXL(nn.Module):
             ret = ret + [hidden]
         # print(kl_loss)
         kl_loss = kl_loss / dec_inp.size(0) * dec_inp.size(1)
-        print("dec_inp.size:", dec_inp.size())
         ret = ret + [kl_loss]
         return ret
 

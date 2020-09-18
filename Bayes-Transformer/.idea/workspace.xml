@@ -1,19 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="ChangeListManager">
-    <list default="true" id="eb99d197-0c9a-44ba-bdb7-45da8705bf27" name="Default Changelist" comment="">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-    </list>
+    <list default="true" id="7ad666dd-5d63-49d0-945e-df5f6d77ea0e" name="Default Changelist" comment="" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
     <option name="LAST_RESOLUTION" value="IGNORE" />
   </component>
-  <component name="Git.Settings">
-    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$/.." />
-  </component>
-  <component name="ProjectId" id="1h35aQEQLoJodYVEvXdqRsGhOfj" />
-  <component name="ProjectLevelVcsManager" settingsEditedManually="true" />
+  <component name="ProjectId" id="1fGzPH1nrpP0TskrYZG9WYcSN6I" />
   <component name="ProjectViewState">
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showExcludedFiles" value="true" />
@@ -21,25 +15,29 @@
   </component>
   <component name="PropertiesComponent">
     <property name="RunOnceActivity.ShowReadmeOnStart" value="true" />
-    <property name="SHARE_PROJECT_CONFIGURATION_FILES" value="true" />
     <property name="WebServerToolWindowFactoryState" value="false" />
     <property name="last_opened_file_path" value="$PROJECT_DIR$" />
+    <property name="settings.editor.selected.configurable" value="com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable" />
   </component>
   <component name="SvnConfiguration">
     <configuration />
   </component>
   <component name="TaskManager">
     <task active="true" id="Default" summary="Default task">
-      <changelist id="eb99d197-0c9a-44ba-bdb7-45da8705bf27" name="Default Changelist" comment="" />
-      <created>1599226997152</created>
+      <changelist id="7ad666dd-5d63-49d0-945e-df5f6d77ea0e" name="Default Changelist" comment="" />
+      <created>1595859191025</created>
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
-      <updated>1599226997152</updated>
-      <workItem from="1599227001367" duration="7382000" />
-      <workItem from="1599288893270" duration="3036000" />
-      <workItem from="1599308767944" duration="21647000" />
-      <workItem from="1599880661929" duration="2395000" />
-      <workItem from="1599888562476" duration="15053000" />
+      <updated>1595859191025</updated>
+      <workItem from="1595859192324" duration="3519000" />
+      <workItem from="1595955726003" duration="690000" />
+      <workItem from="1596479832722" duration="311000" />
+      <workItem from="1596485131094" duration="4714000" />
+      <workItem from="1596820064245" duration="483000" />
+      <workItem from="1598168445784" duration="268000" />
+      <workItem from="1598524169491" duration="4806000" />
+      <workItem from="1599304732299" duration="190000" />
+      <workItem from="1599810737657" duration="2651000" />
     </task>
     <servers />
   </component>
@@ -47,9 +45,9 @@
     <option name="version" value="1" />
   </component>
   <component name="WindowStateProjectService">
-    <state x="383" y="194" width="672" height="678" key="search.everywhere.popup" timestamp="1600142119225">
+    <state x="220" y="89" key="SettingsEditor" timestamp="1598679144138">
       <screen x="0" y="0" width="1440" height="900" />
     </state>
-    <state x="383" y="194" width="672" height="678" key="search.everywhere.popup/0.0.1440.900@0.0.1440.900" timestamp="1600142119225" />
+    <state x="220" y="89" key="SettingsEditor/0.0.1440.900@0.0.1440.900" timestamp="1598679144138" />
   </component>
 </project>
