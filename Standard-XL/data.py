@@ -9,15 +9,13 @@ EOS = '</s>'
 UNK = '<unk>'
 NUM = '<num>'
 
-data_version = 0
-
 
 class Vocabulary(object):
     """
     Vocabulary: establish indexes to words.
     """
 
-    def __init__(self, vocfile, use_num=True):
+    def __init__(self, vocfile, use_num=True, data_version=None):
         super(Vocabulary, self).__init__()
         self.use_num = use_num
         self.word2idx = {}
@@ -32,7 +30,7 @@ class Vocabulary(object):
         # print("vocabulary: ", words)
 
         for loop_i, word in enumerate(words):
-            if data_version == 2:
+            if data_version == 2 or 3:
                 num_word = len(str(loop_i)) + 1
                 word = word[:-num_word]
                 pass
@@ -143,7 +141,7 @@ class Corpus(object):
         self.use_voc = use_voc
         self.dictionary = Dictionary()
         if data_version == 0:
-            self.voc = Vocabulary(os.path.join(path, 'voc.txt'), use_num=False)
+            self.voc = Vocabulary(os.path.join(path, 'voc.txt'), use_num=False, data_version=data_version)
             self.train_data = self.tokenize(os.path.join(path, 'train.txt'))
             self.valid_data = self.tokenize(os.path.join(path, 'valid.txt'))
             self.test_data = self.tokenize(os.path.join(path, 'test.txt'))
@@ -151,7 +149,7 @@ class Corpus(object):
             self.test_loader = None
             pass
         elif data_version == 1:
-            self.voc = Vocabulary(os.path.join(path, 'voc.txt'), use_num=False)
+            self.voc = Vocabulary(os.path.join(path, 'voc.txt'), use_num=False, data_version=data_version)
             self.train_data = self.tokenize(os.path.join(path, 'train.txt'))
             self.valid_data = TextDataset(os.path.join(path, 'valid.txt'), self.voc)
             self.test_data = TextDataset(os.path.join(path, 'test.txt'), self.voc)
@@ -164,7 +162,7 @@ class Corpus(object):
                                                shuffle=False, num_workers=0, collate_fn=collate_fn, drop_last=False)
             pass
         elif data_version == 2:
-            self.voc = Vocabulary(os.path.join(path, 'words.txt'), use_num=False)
+            self.voc = Vocabulary(os.path.join(path, 'words.txt'), use_num=False, data_version=data_version)
             self.train_data = self.tokenize(os.path.join(path, 'fisher.txt'))
             self.valid_data = TextDataset(os.path.join(path, 'dev.txt'), self.voc)
             self.test_data = TextDataset(os.path.join(path, 'swbd.txt'), self.voc)
@@ -172,6 +170,14 @@ class Corpus(object):
                                                 shuffle=False, num_workers=0, collate_fn=collate_fn, drop_last=False)
             self.test_loader = data.DataLoader(self.test_data, batch_size=test_batch,
                                                shuffle=False, num_workers=0, collate_fn=collate_fn, drop_last=False)
+            pass
+        elif data_version == 3:
+            self.voc = Vocabulary(os.path.join(path, 'words.txt'), use_num=False, data_version=data_version)
+            self.train_data = self.tokenize(os.path.join(path, 'fisher.txt'))
+            self.valid_data = self.tokenize(os.path.join(path, 'dev.txt'))
+            self.test_data = self.tokenize(os.path.join(path, 'swbd.txt'))
+            self.valid_loader = None
+            self.test_loader = None
             pass
         pass
 
