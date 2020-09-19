@@ -1,5 +1,6 @@
 import argparse
-import sys, os
+import os
+import hashlib
 import time
 import math
 import numpy as np
@@ -14,8 +15,12 @@ from utils import batchify, get_batch, create_exp_dir, get_logger
 parser = argparse.ArgumentParser(description='PyTorch PennTreeBank Language Model')
 parser.add_argument('--work_dir', default='TFM', type=str,
                     help='experiment directory.')
-parser.add_argument('--data', type=str, default='data/penn/',
+parser.add_argument('--data', type=str, default='../TransformerLM/include/data',
                     help='location of the data corpus')
+parser.add_argument('--dataset', type=str, default='swbd',
+                    help='location of dataset uesd')
+parser.add_argument('--sentence-level', type=bool, default=True,
+                    help='evaluating on sentence_level or segment_level for xl_net')
 
 # model related
 parser.add_argument('--n_layer', type=int, default=6,
@@ -94,7 +99,7 @@ parser.add_argument('--epoch_ema', action='store_true',
 parser.add_argument('--ema_lr_mult', type=float, default=0.5,
                     help='lr multiplier when switching to EMA.')
 
-parser.add_argument('--batch_size', type=int, default=10,
+parser.add_argument('--batch_size', type=int, default=20,
                     help='batch size')
 parser.add_argument('--bptt', type=int, default=70,
                     help='sequence length')
@@ -119,6 +124,15 @@ parser.add_argument('--debug', action='store_true',
 parser.add_argument('--when', type=int, nargs='+', default=[],
                     help='when to save checkpoints')
 
+# bayesian network
+parser.add_argument('--bayes_ffn', type=int, default=0,
+                    help='number of bayesian ffn layers')
+parser.add_argument('--bayes_attn', type=int, default=0,
+                    help='number of bayesian attn layers')
+parser.add_argument('--bayes_embed', type=bool, default=False,
+                    help='use bayes for embedding or not')
+
+
 args = parser.parse_args()
 args.tied = not args.not_tied
 args.epochs = args.std_epochs + args.ema_epochs
@@ -127,8 +141,7 @@ if args.decay_epochs < 0:
 
 if not args.resume:
     args.work_dir = os.path.join(args.work_dir, time.strftime("%Y%m%d-%H%M%S"))
-    logging = create_exp_dir(args.work_dir,
-        scripts_to_save=['train.py', 'transformer_xl.py'], debug=args.debug)
+    logging = create_exp_dir(args.work_dir, scripts_to_save=['train.py', 'transformer_xl.py'], debug=args.debug)
     if not args.debug:
         args.save = os.path.join(args.work_dir, args.save)
 else:
@@ -148,44 +161,68 @@ if torch.cuda.is_available():
         torch.cuda.manual_seed(args.seed)
 device = torch.device("cuda" if args.cuda else "cpu")
 
+
 ###############################################################################
 # Load data
 ###############################################################################
-
-def model_save(fn):
-    with open(fn, 'wb') as f:
+def model_save(save_path):
+    with open(save_path, 'wb') as f:
         torch.save([model, criterion, optimizer, scheduler], f)
 
-def model_load(fn):
+
+def model_load(save_path):
     global model, criterion, optimizer, scheduler
-    with open(fn, 'rb') as f:
+    with open(save_path, 'rb') as f:
         model, criterion, optimizer, scheduler = torch.load(f)
 
-import os
-import hashlib
+
+eval_batch_size = 1
+test_batch_size = 1
+
+data_path = os.path.join(args.data, args.dataset)
+if args.sentence_level is False:
+    data_path = os.path.join(args.data, 'xl-net')
+pass
+
 fn = os.path.join(
-    args.data,
-    'corpus.{}.data'.format(hashlib.md5(args.data.encode()).hexdigest()))
+    data_path,
+    'corpus.{}.data'.format(hashlib.md5(data_path.encode()).hexdigest()))
 if os.path.exists(fn):
     logging('Loading cached dataset...')
     corpus = torch.load(fn)
 else:
     logging('Producing dataset...')
-    corpus = data.Corpus(args.data)
+    corpus = data.Corpus(args, data_path, eval_batch_size, test_batch_size)
     torch.save(corpus, fn)
 
-eval_batch_size = 10
-test_batch_size = 1
-train_data = batchify(corpus.train, args.batch_size, args)
-val_data = batchify(corpus.valid, eval_batch_size, args)
-test_data = batchify(corpus.test, test_batch_size, args)
+# logging('Producing dataset...')
+# corpus = data.Corpus(args.data, args.data_version, eval_batch_size, test_batch_size)
+# torch.save(corpus, fn)
 
-args.max_decay_step = (train_data.size(0) + args.bptt -1) // args.bptt * args.decay_epochs
+
+train_data = batchify(corpus.train_data, args.batch_size, args)
+if args.sentence_level is False:
+    val_data = batchify(corpus.valid_data, eval_batch_size, args)
+    test_data = batchify(corpus.test_data, test_batch_size, args)
+    pass
+elif args.sentence_level is True:
+    val_data = corpus.valid_loader
+    test_data = corpus.valid_loader
+    pass
+else:
+    val_data = None
+    test_data = None
+    pass
+pass
+
+args.max_decay_step = (train_data.size(0) + args.bptt - 1) // args.bptt * args.decay_epochs
 
 ###############################################################################
 # Build the model
 ###############################################################################
-ntokens = len(corpus.dictionary)
+# print(corpus.voc.idx2word)
+ntokens = len(corpus.voc)
+
 
 def weights_init(m):
     classname = m.__class__.__name__
@@ -220,11 +257,12 @@ def weights_init(m):
             elif args.init == 'normal':
                 nn.init.normal_(m.r_r_bias, 0.0, args.init_std)
 
-model = AWDTransformerXL(ntokens, args.n_layer, args.n_head, args.d_model,
-    args.d_head, args.d_inner, args.dropoute, args.dropouti, args.dropouta,
-    args.dropoutf, args.dropouth, args.dropouto, tie_weight=args.tied,
-    tgt_len=args.bptt, ext_len=args.ext_len, mem_len=args.mem_len,
-    clamp_len=args.clamp_len).to(device)
+
+model = AWDTransformerXL(ntokens, args.n_layer, args.n_head, args.d_model, args.d_head, args.d_inner,
+                         args.dropoute, args.dropouti, args.dropouta, args.dropoutf, args.dropouth,
+                         args.dropouto, tie_weight=args.tied, tgt_len=args.bptt, ext_len=args.ext_len,
+                         mem_len=args.mem_len, clamp_len=args.clamp_len, bayes_ffn=args.bayes_ffn,
+                         bayes_attn=args.bayes_attn, bayes_embed=args.bayes_embed).to(device)
 
 model.apply(weights_init)
 if args.emb_init == 'uniform':
@@ -232,15 +270,12 @@ if args.emb_init == 'uniform':
 elif args.emb_init == 'normal':
     nn.init.normal_(model.word_emb.weight, 0.0, args.init_std)
 
-###
 criterion = nn.CrossEntropyLoss().to(device)
 
-###
 if args.resume:
     logging('Resuming model ...')
     model_load(args.resume)
 
-###
 params = list(model.parameters()) + list(criterion.parameters())
 nonemb_params = [p for p in model.parameters() if p.size() != (ntokens, args.d_model)]
 emb_params = list(model.word_emb.parameters())
@@ -249,40 +284,40 @@ args.total_params = sum(x.numel() for x in params if x is not None)
 args.nonemb_params = sum(x.numel() for x in nonemb_params if x is not None)
 args.emb_params = sum(x.numel() for x in emb_params if x is not None)
 
-### optimizer
+# optimizer
 param_list = [nonemb_params, emb_params]
 lr_list = [args.lr, args.lr * args.emb_mult]
 
 if args.optimizer == 'sgd':
     optimizer = torch.optim.SGD(
-        [{'params':p, 'lr':lr} for p, lr in zip(param_list, lr_list)],
+        [{'params': p, 'lr': lr} for p, lr in zip(param_list, lr_list)],
         weight_decay=args.wdecay)
 if args.optimizer == 'adam':
     optimizer = torch.optim.Adam(
-        [{'params':p, 'lr':lr} for p, lr in zip(param_list, lr_list)],
+        [{'params': p, 'lr': lr} for p, lr in zip(param_list, lr_list)],
         weight_decay=args.wdecay)
 if args.optimizer == 'asgd':
     optimizer = torch.optim.ASGD(
-        [{'params':p, 'lr':lr} for p, lr in zip(param_list, lr_list)],
+        [{'params': p, 'lr': lr} for p, lr in zip(param_list, lr_list)],
         t0=0, lambd=0., weight_decay=args.wdecay)
 
-### scheduler
+# scheduler
 if args.optimizer != 'asgd':
     if args.scheduler == 'cosine':
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,
-            args.max_decay_step-args.warmup_step, eta_min=args.lr_min)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.max_decay_step-args.warmup_step,
+                                                               eta_min=args.lr_min)
     elif args.scheduler == 'inv_sqrt':
         # originally used for Transformer (c.f. Attention is all you need)
         lr_lambda = lambda step: \
             step / args.warmup_step if step < args.warmup_step else \
             (args.warmup_step ** 0.5) / (step ** 0.5)
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer,
-            lr_lambda=lr_lambda)
+                                                      lr_lambda=lr_lambda)
     elif args.scheduler == 'const':
         lr_lambda = lambda step: \
             step / args.warmup_step if step < args.warmup_step else 1.
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer,
-            lr_lambda=lr_lambda)
+                                                      lr_lambda=lr_lambda)
 else:
     scheduler = None
 
@@ -292,11 +327,19 @@ for k, v in args.__dict__.items():
     logging('    - {} : {}'.format(k, v))
 logging('=' * 100)
 
+
 ###############################################################################
 # Training code
 ###############################################################################
+# Statistics of correct words and total words in current batch.
+def words_count(words):
+    # count the words in current batchs that id is not PAD.
+    non_pad_mask = words.ne(0)
+    n_word = non_pad_mask.sum().item()
+    return n_word
 
-def evaluate(data_source, batch_size=10, eval_bptt=50):
+
+def evaluate(data_source, eval_bptt=50):
     # Turn on evaluation mode which disables dropout.
     model.eval()
 
@@ -311,24 +354,49 @@ def evaluate(data_source, batch_size=10, eval_bptt=50):
         eval_ext_len = args.ext_len
         model.reset_length(eval_bptt, eval_ext_len, eval_mem_len)
 
-    total_loss = 0
     mems = tuple()
-    for i in range(0, data_source.size(0) - 1, eval_bptt):
-        data, target = get_batch(data_source, i, args, seq_len=eval_bptt,
-                                 ext_len=eval_ext_len)
+    total_words = 0
+    total_loss = 0
 
-        ret = model(data, target, *mems, return_h=True)
-        raw_loss, mems, last_hid, _ = ret[0], ret[1:-2], ret[-2], ret[-1]
-        raw_loss = raw_loss.mean()
-        total_loss += target.size(0) * raw_loss.item()
+    if args.sentence_level is False:
+        for i in range(0, data_source.size(0) - 1, eval_bptt):
+            inputs, target = get_batch(data_source, i, args, seq_len=eval_bptt, ext_len=eval_ext_len)
+            # print("data.size:" + str(data.size()) + "  target.size:" + str(target.size()))
+            ret = model(inputs, target, *mems, return_h=True)
+            raw_loss, mems, last_hid, _ = ret[0], ret[1:-2], ret[-2], ret[-1]
+            raw_loss = raw_loss.mean()
+            total_loss += target.size(0) * raw_loss.item()
+            total_words = len(data_source)
+        pass
+    elif args.sentence_level is True:
+        for _, (inputs, targets, sent_lens) in enumerate(data_source):
+            # calculate loss and accuracy.
+            if torch.cuda.is_available():
+                inputs = inputs.cuda()
+                targets = targets.cuda()
+                pass
+
+            # print("inputs.size:" + str(inputs.size()) + "  targets.size:" + str(targets.size()))
+            ret = model(inputs, targets[1:, :], *mems, return_h=True,
+                        sentence_level=args.sentence_level, sent_lens=sent_lens)
+            raw_loss, mems, last_hid, _ = ret[0], ret[1:-2], ret[-2], ret[-1]
+            raw_loss = raw_loss.mean()
+            # total_loss += targets.size(0) * raw_loss.item()
+            # total_words = len(data_source)
+            n_words = words_count(inputs)
+            total_loss += n_words * raw_loss.item()
+            total_words += n_words
+            pass
+    pass
 
     # Switch back to the training mode
     model.reset_length(args.bptt, args.ext_len, args.mem_len)
     model.train()
 
-    return total_loss / len(data_source)
+    return total_loss / total_words
 
-def train():
+
+def train(data_display=False):
     # Turn on training mode which enables dropout.
     global step, ema, EMA
     total_loss = 0
@@ -347,26 +415,28 @@ def train():
         if scheduler is not None and not EMA and step <= args.max_decay_step:
             if args.scheduler == 'cosine':
                 if step < args.warmup_step:
-                    for k in range(len(optimizer.param_groups)):
-                        optimizer.param_groups[k]['lr'] = \
-                            lr_list[k] * step / args.warmup_step
+                    for loop_k in range(len(optimizer.param_groups)):
+                        optimizer.param_groups[loop_k]['lr'] = \
+                            lr_list[loop_k] * step / args.warmup_step
                 else:
                     scheduler.step()
             else:
                 scheduler.step()
 
         model.train()
-        data, target = get_batch(train_data, i, args, seq_len=seq_len)
+        # print(train_data.size(), seq_len)
+        inputs, target = get_batch(train_data, i, args, seq_len=seq_len)
 
         optimizer.zero_grad()
 
-        ##### Forward
-        ret = model(data, target, *mems, return_h=True)
+        # Forward
+        # print(data, target)
+        ret = model(inputs, target, *mems, return_h=True, display=data_display)
         raw_loss, mems, last_hid, kl_loss = ret[0], ret[1:-2], ret[-2], ret[-1]
         raw_loss = raw_loss.mean()
-
+        kl_loss = kl_loss / len(train_data)
         loss = raw_loss + kl_loss
-        # print("raw_loss, kl_loss:", raw_loss, kl_loss)
+
         # Activiation Regularization
         if args.alpha:
             loss = loss + args.alpha * last_hid.pow(2).mean()
@@ -375,24 +445,19 @@ def train():
         if args.beta:
             loss = loss + args.beta * (last_hid[1:] - last_hid[:-1]).pow(2).mean()
 
-        ##### Backward
-        # print("data.size:", data.size())
-        # for i in range(args.n_layer):
-        #     kl_loss = kl_loss + model.layers[i].pos_ff.kl_divergence()/(data.size[0]*args.batch_size)
-        #     pass
-        # print("ongoing")
-        # kl_loss = kl_loss + model.layers()[0].pos_ff.kl_divergence() / (data.size[0] * args.batch_size)
+        # Backward
         loss.backward()
 
         # `clip_grad_norm` helps prevent the exploding gradient problem
-        if args.clip: torch.nn.utils.clip_grad_norm_(params, args.clip)
+        if args.clip:
+            torch.nn.utils.clip_grad_norm_(params, args.clip)
 
         # optimizer step
-        for k in range(len(optimizer.param_groups)):
-            optimizer.param_groups[k]['lr'] *= (seq_len / args.bptt)
+        for loop_k in range(len(optimizer.param_groups)):
+            optimizer.param_groups[loop_k]['lr'] *= (seq_len / args.bptt)
         optimizer.step()
-        for k in range(len(optimizer.param_groups)):
-            optimizer.param_groups[k]['lr'] /= (seq_len / args.bptt)
+        for loop_k in range(len(optimizer.param_groups)):
+            optimizer.param_groups[loop_k]['lr'] /= (seq_len / args.bptt)
 
         # Keep exponential moving average of model parameters
         if EMA and not args.epoch_ema:
@@ -410,16 +475,17 @@ def train():
             elapsed = time.time() - start_time
             log_str = '| epoch {:3d} | {:5d}/{:5d} batches | lr {:.4g} ' \
                       '| ms/batch {:5.2f} | loss {:5.2f} | kl_loss {:5.2f} ' \
-                      '| ppl {:8.2f} | bpt {:8.3f} '.format(epoch, batch,
-                len(train_data) // args.bptt, optimizer.param_groups[0]['lr'],
-                elapsed * 1000 / args.log_interval, cur_loss, kl_loss,
-                math.exp(cur_loss), cur_loss / math.log(2))
+                      '| ppl {:8.2f} | bpt {:8.3f} '.format(epoch, batch, len(train_data) // args.bptt,
+                                                            optimizer.param_groups[0]['lr'],
+                                                            elapsed * 1000 / args.log_interval, cur_loss, kl_loss,
+                                                            math.exp(cur_loss), cur_loss / math.log(2))
             logging(log_str)
             total_loss = 0
             start_time = time.time()
-        ###
+        #
         batch += 1
         i += seq_len
+
 
 # Loop over epochs.
 step = 0
@@ -427,10 +493,11 @@ lr = args.lr
 stored_loss = float('inf')
 ema, EMA = {}, False
 
+
 # At any point you can hit Ctrl + C to break out of training early.
 try:
     for epoch in range(1, args.epochs+1):
-        if epoch == args.std_epochs+1:
+        if epoch == args.std_epochs + 1:
             logging('Starting EMA at epoch {}'.format(epoch))
 
             EMA = True
@@ -442,7 +509,16 @@ try:
             args.save = os.path.join(args.work_dir, 'model-ema.pt')
 
         epoch_start_time = time.time()
-        train()
+
+        if epoch == args.std_epochs:
+            display = False
+            pass
+        else:
+            display = False
+            pass
+        pass
+
+        train(data_display=display)
 
         # Evaluate using the EMA of parameters
         if EMA:
@@ -462,9 +538,9 @@ try:
             val_loss = evaluate(val_data, eval_batch_size)
             logging('-' * 89)
             logging('| end of epoch {:3d} | time: {:5.2f}s | valid loss {:5.2f} '
-                    '| valid ppl {:9.2f} | valid bpt {:8.3f}'.format(
-                epoch, (time.time() - epoch_start_time), val_loss,
-                math.exp(val_loss), val_loss / math.log(2)))
+                    '| valid ppl {:9.2f} | valid bpt {:8.3f}'
+                    .format(epoch, (time.time() - epoch_start_time),
+                            val_loss, math.exp(val_loss), val_loss / math.log(2)))
             logging('-' * 89)
 
             if val_loss < stored_loss:
@@ -477,12 +553,12 @@ try:
 
         # Evaluate using current model parameters
         else:
-            val_loss = evaluate(val_data, eval_batch_size)
+            val_loss = evaluate(val_data)
             logging('-' * 89)
             logging('| end of epoch {:3d} | time: {:5.2f}s | valid loss {:5.2f} '
-                    '| valid ppl {:8.2f} | valid bpt {:8.3f}'.format(
-                epoch, (time.time() - epoch_start_time), val_loss,
-                math.exp(val_loss), val_loss / math.log(2)))
+                    '| valid ppl {:8.2f} | valid bpt {:8.3f}'
+                    .format(epoch, (time.time() - epoch_start_time), val_loss,
+                            math.exp(val_loss), val_loss / math.log(2)))
             logging('-' * 89)
 
             if val_loss < stored_loss:
@@ -502,10 +578,11 @@ model_load(args.save)
 model.temperature = 1.08
 
 # Run on test data.
-test_bptt = 50
-test_loss = evaluate(test_data, test_batch_size, test_bptt)
+test_bptt = 1
+test_loss = evaluate(test_data, test_bptt)
+
 logging('=' * 89)
 logging('| End of training | test loss {:5.2f} '
-        '| test ppl {:8.2f} | test bpt {:8.3f}'.format(
-    test_loss, math.exp(test_loss), test_loss / math.log(2)))
+        '| test ppl {:8.2f} | test bpt {:8.3f}'.format(test_loss, math.exp(test_loss),
+                                                       test_loss / math.log(2)))
 logging('=' * 89)

@@ -12,6 +12,7 @@ def embedded_dropout(embed, words, dropout=0.1, scale=None):
         masked_embed_weight.masked_fill_(mask.eq(0), EPS)
   else:
     masked_embed_weight = embed.weight
+    # print(masked_embed_weight)
   if scale:
     masked_embed_weight = scale.expand_as(masked_embed_weight) * masked_embed_weight
 

@@ -9,15 +9,17 @@ import torch.nn.functional as F
 from adaptive_softmax import AdaptiveLogSoftmax
 from embed_regularize import embedded_dropout
 from locked_dropout import LockedDropout
+from torch.nn.utils.rnn import pack_padded_sequence
 
 
 def _rel_shift(x, zero_triu=False):
+    # x: [word_len, word_len + 1, batch_size, num_heads]
     x_padded = x.reshape(x.size(1), x.size(0), *x.size()[2:])
     x = x_padded[1:].reshape(x.size(0), x.size(1) - 1, *x.size()[2:])
 
     if zero_triu:
         ones = torch.ones((x.size(0), x.size(1)))
-        x = x * torch.tril(ones, x.size(1) - x.size(0))[:,:,None,None]
+        x = x * torch.tril(ones, x.size(1) - x.size(0))[:, :, None, None]
 
     return x
 
@@ -29,16 +31,21 @@ class PositionalEmbedding(nn.Module):
         self.demb = demb
 
         inv_freq = 1 / (10000 ** (torch.arange(0.0, demb, 2.0) / demb))
+        self.inv = inv_freq
         self.register_buffer('inv_freq', inv_freq)
 
     def forward(self, pos_seq, bsz=None):
+        # print(self.inv)
+        # print(pos_seq.size(), self.inv.size())
         sinusoid_inp = torch.ger(pos_seq, self.inv_freq)
+        # print(sinusoid_inp.size())
         pos_emb = torch.cat([sinusoid_inp.sin(), sinusoid_inp.cos()], dim=-1)
+        # print(pos_emb.size())
 
         if bsz is not None:
-            return pos_emb[:,None,:].expand(-1, bsz, -1)
+            return pos_emb[:, None, :].expand(-1, bsz, -1)
         else:
-            return pos_emb[:,None,:]
+            return pos_emb[:, None, :]
 
 
 class PositionwiseFF(nn.Module):
@@ -58,11 +65,11 @@ class PositionwiseFF(nn.Module):
 
         self.layer_norm = nn.LayerNorm(d_model)
 
-    def forward(self, inp):
-        ##### positionwise feed-forward
+    def forward(self, inp, display=False):
+        # positionwise feed-forward
         core_out = self.CoreNet(inp)
 
-        ##### residual connection + layer normalization
+        # residual connection + layer normalization
         output = self.layer_norm(inp + core_out)
 
         return output, 0
@@ -108,8 +115,8 @@ class BayesPositionwiseFF(nn.Module):
         # kl += torch.mean(theta_mean ** 2. + theta_std ** 2 + 2 * torch.log(theta_std)) / 2.
         return kl
 
-    def forward(self, inp):
-        ##### positionwise feed-forward
+    def forward(self, inp, display=False):
+        # positionwise feed-forward
         # print("inp.size(): ", inp.size())
         self.weight1 = self.weight_mean1*1.
         self.weight2 = self.weight_mean2*1.
@@ -123,11 +130,11 @@ class BayesPositionwiseFF(nn.Module):
         layer2_out = F.linear(layer1_out, self.weight2)
         # print("layer2_out_size:", layer2_out.size())
 
-        ##### residual connection + layer normalization
+        # residual connection + layer normalization
         output = self.layer_norm(inp + layer2_out)
 
         kl = self.kl_divergence()
-        #kl = 0
+        # kl = 0
 
         return output, kl
 
@@ -156,8 +163,8 @@ class MultiHeadAttn(nn.Module):
 
         self.scale = 1 / (d_head ** 0.5)
 
-    def forward(self, h, attn_mask=None, mems=None):
-        ##### multihead attention
+    def forward(self, h, attn_mask=None, pad_mask=None, mems=None):
+        # multihead attention
         # [hlen x bsz x n_head x d_head]
         head_q, head_k, head_v = torch.chunk(self.qkv_net(h), 3, -1)
         head_q = head_q.view(h.size(0), h.size(1), self.n_head, self.d_head)
@@ -167,11 +174,30 @@ class MultiHeadAttn(nn.Module):
         # [qlen x klen x bsz x n_head]
         attn_score = torch.einsum('ibnd,jbnd->ijbn', (head_q, head_k))
         attn_score.mul_(self.scale)
+        # print("attn_score.size: ", attn_score.size())
+        # print("dec_attn_mask.size: ", attn_mask.size(), pad_mask.size())
+
         if attn_mask is not None and attn_mask.any().item():
             if attn_mask.dim() == 2:
-                attn_score.masked_fill_(attn_mask[None,:,:,None], -float('inf'))
+                attn_score.masked_fill_(attn_mask[None, :, :, None], -float('inf'))
             elif attn_mask.dim() == 3:
-                attn_score.masked_fill_(attn_mask[:,:,:,None], -float('inf'))
+                attn_score.masked_fill_(attn_mask[:, :, :, None], -float('inf'))
+                # print("dec_attn_mask.size: ", attn_mask[:, :, :, None].size())
+                # print("dec_attn_mask.size: ", attn_mask)
+
+        # if not self.training:
+        #     # print("attn_mask: ", attn_mask[:, :, 0])
+        #     # print("pad_mask: ", pad_mask[:, :, 0])
+        #     # print("attn_mask.size: ", attn_mask.size())
+        #     # print("pad_mask.size: ", pad_mask.size())
+        #     # dec_attn_mask = torch.gt(attn_mask + pad_mask, 0)
+        #     # print("dec_attn_mask.size: ", attn_mask.size())
+        #     # print("dec_attn_mask: ", dec_attn_mask[:, :, 0])
+        #     # print("attn_score.size: ", attn_score.size())
+        #     # attn_score.masked_fill_(pad_mask[:, :, :, None], -float('inf'))
+        #     pass
+        # else:
+        #     pass
 
         # [qlen x klen x bsz x n_head]
         attn_prob = F.softmax(attn_score, dim=1)
@@ -183,11 +209,11 @@ class MultiHeadAttn(nn.Module):
         attn_vec = attn_vec.contiguous().view(
             attn_vec.size(0), attn_vec.size(1), self.n_head * self.d_head)
 
-        ##### linear projection
+        # linear projection
         attn_out = self.o_net(attn_vec)
         attn_out = self.locked_drop(attn_out)
 
-        ##### residual connection + layer normalization
+        # residual connection + layer normalization
         output = self.layer_norm(h + attn_out)
 
         return output
@@ -198,6 +224,8 @@ class RelMultiHeadAttn(MultiHeadAttn):
         super(RelMultiHeadAttn, self).__init__(n_head, d_model, d_head, dropout)
 
     def forward(self, w, r, attn_mask=None, mems=None):
+        # w: dec_inp, r: pos_emb.
+        # print("w.size(), r.size(): ", w.size(), r.size())
         qlen, rlen, bsz = w.size(0), r.size(0), w.size(1)
 
         if mems is not None:
@@ -209,79 +237,99 @@ class RelMultiHeadAttn(MultiHeadAttn):
 
             w_head_q = w_head_q[-qlen:]
         else:
+            # generate query, key, value about dec_input by linear transform
+            # print("w.size(): ", w.size())
             w_heads = self.qkv_net(w)
+            # print("w_heads.size(): ", w_heads.size())
+            # print("r.size(): ", r.size())
             r_heads = self.qkv_net(r)
+            # print("r_heads.size(): ", r_heads.size())
 
+            # split the query, key, value.
             w_head_q, w_head_k, w_head_v = torch.chunk(w_heads, 3, dim=-1)
             r_head_q, r_head_k, r_head_v = torch.chunk(r_heads, 3, dim=-1)
 
         klen = w_head_k.size(0)
-
+        # split q, k, v using multi-head attention
+        # print("w_head_q: ", w_head_q.size())
+        # print("qlen, klen: ", qlen, klen), qlen = klen
         w_head_q = w_head_q.view(qlen, bsz, self.n_head, self.d_head)
+        # print("w_head_q.reshape: ", w_head_q.size())
         w_head_k = w_head_k.view(klen, bsz, self.n_head, self.d_head)
         w_head_v = w_head_v.view(klen, bsz, self.n_head, self.d_head)
 
         r_head_q = r_head_q.view(rlen, self.n_head, self.d_head)
         r_head_k = r_head_k.view(rlen, self.n_head, self.d_head)
 
-        #### compute attention score
+        # compute attention score
+        # i: num_word, j: num_pos, b: batch, n: n_heads, d: d_heads.
+        # print("w_head_q + r_head_q[-1]: ", w_head_q.size(), r_head_q.size(), r_head_q[-1].size())
         rw_head_q = w_head_q + r_head_q[-1]
+        # print("rw_head_q.size(): ", rw_head_q.size())
         AC = torch.einsum('ibnd,jbnd->ijbn', (rw_head_q, w_head_k))
 
         rr_head_q = w_head_q + r_head_q[-1]
+        # print("rr_head_q.size(), r_head_k.size(): ", rr_head_q.size(), r_head_k.size())
         BD = torch.einsum('ibnd,jnd->ijbn', (rr_head_q, r_head_k))
+        # print("BD.size(): ", BD.size())
+        # change [word_len, word_len + 1, batch_size, num_heads] to [word_len, word_len, batch_size, num_heads]
         BD = _rel_shift(BD)
+        # print("BD.size_shift(): ", BD.size())
 
         # [qlen x klen x bsz x n_head]
         attn_score = AC + BD
+        # print(self.scale)
         attn_score.mul_(self.scale)
 
-        #### compute attention probability
+        # compute attention probability
         if attn_mask is not None and attn_mask.any().item():
             if attn_mask.dim() == 2:
-                attn_score.masked_fill_(attn_mask[None,:,:,None], -float('inf'))
+                attn_score.masked_fill_(attn_mask[None, :, :, None], -float('inf'))
+                # print("attn_mask 2")
             elif attn_mask.dim() == 3:
-                attn_score.masked_fill_(attn_mask[:,:,:,None], -float('inf'))
+                # print("attn_mask.size(): ", attn_mask.size())
+                # print("attn_mask", attn_mask[:,:,:,None].size())
+                attn_score.masked_fill_(attn_mask[:, :, :, None], -float('inf'))
+                # print("attn_mask 3")
 
         # [qlen x klen x bsz x n_head]
+        # print("attn_score.size(): ", attn_score.size())
         attn_prob = F.softmax(attn_score, dim=1)
+        print("attn_prob.size(): ", attn_prob.size())
         attn_prob = self.drop(attn_prob)
         # attn_prob = self.locked_drop(attn_prob)
 
-        #### compute attention vector
+        # compute attention vector
         attn_vec = torch.einsum('ijbn,jbnd->ibnd', (attn_prob, w_head_v))
 
         # [qlen x bsz x n_head x d_head]
         attn_vec = attn_vec.contiguous().view(
             attn_vec.size(0), attn_vec.size(1), self.n_head * self.d_head)
 
-        ##### linear projection
+        # linear projection
         attn_out = self.o_net(attn_vec)
         attn_out = self.locked_drop(attn_out)
 
-        ##### residual connection + layer normalization
+        # residual connection + layer normalization
         output = self.layer_norm(w + attn_out)
 
         return output
 
 
 class RelDecoderLayer(nn.Module):
-    def __init__(self, n_head, d_model, d_head, d_inner, dropoutf, dropouta, bayes=None,
+    def __init__(self, n_head, d_model, d_head, d_inner, dropoutf, dropouta, bayes_ffn=None, bayes_attn=None,
                  **kwargs):
         super(RelDecoderLayer, self).__init__()
-
-        self.dec_attn = RelMultiHeadAttn(n_head, d_model, d_head, dropouta,
-                                         **kwargs)
-        if bayes == True:
+        self.dec_attn = MultiHeadAttn(n_head, d_model, d_head, dropouta,
+                                      **kwargs)
+        if bayes_ffn is True:
             self.pos_ff = BayesPositionwiseFF(d_model, d_inner, dropoutf)
         else:
             self.pos_ff = PositionwiseFF(d_model, d_inner, dropoutf)
 
-    def forward(self, dec_inp, pos_emb, dec_attn_mask=None, mems=None):
-
-        output = self.dec_attn(dec_inp, pos_emb, attn_mask=dec_attn_mask,
-                               mems=mems)
-        output, kl = self.pos_ff(output)
+    def forward(self, dec_inp, pos_emb, dec_attn_mask=None, pad_mask=None, mems=None, display=False):
+        output = self.dec_attn(dec_inp, attn_mask=dec_attn_mask, pad_mask=pad_mask, mems=mems)
+        output, kl = self.pos_ff(output, display)
 
         return output, kl
 
@@ -289,8 +337,8 @@ class RelDecoderLayer(nn.Module):
 class AWDTransformerXL(nn.Module):
     def __init__(self, n_token, n_layer, n_head, d_model, d_head, d_inner,
                  dropoute, dropouti, dropouta, dropoutf, dropouth, dropouto,
-                 tie_weight=True, tgt_len=None, ext_len=0, mem_len=0,
-                 clamp_len=-1):
+                 tie_weight=True, tgt_len=None, ext_len=0, mem_len=0, clamp_len=-1,
+                 bayes_ffn=0, bayes_attn=0, bayes_embed=0):
         super(AWDTransformerXL, self).__init__()
         self.n_token = n_token
         self.d_model = d_model
@@ -318,19 +366,32 @@ class AWDTransformerXL(nn.Module):
         self.clamp_len = clamp_len
 
         self.layers = nn.ModuleList()
-        for i in range(1):
-            self.layers.append(
-                RelDecoderLayer(
-                    n_head, d_model, d_head, d_inner,
-                    dropoutf=dropoutf, dropouta=dropouta, bayes=True)
-            )
-
-        for i in range(5):
-            self.layers.append(
-                RelDecoderLayer(
-                    n_head, d_model, d_head, d_inner,
-                    dropoutf=dropoutf, dropouta=dropouta, bayes=False)
-            )
+        for loop_i in range(n_layer):
+            if loop_i + 1 <= bayes_ffn and loop_i + 1 <= bayes_attn:
+                self.layers.append(
+                    RelDecoderLayer(n_head, d_model, d_head, d_inner, dropoutf=dropoutf,
+                                    dropouta=dropouta, bayes_ffn=True, bayes_attn=True)
+                )
+                pass
+            elif bayes_ffn < loop_i + 1 <= bayes_attn:
+                self.layers.append(
+                    RelDecoderLayer(n_head, d_model, d_head, d_inner, dropoutf=dropoutf,
+                                    dropouta=dropouta, bayes_ffn=False, bayes_attn=True)
+                )
+                pass
+            elif bayes_attn < loop_i + 1 <= bayes_ffn:
+                self.layers.append(
+                    RelDecoderLayer(n_head, d_model, d_head, d_inner, dropoutf=dropoutf,
+                                    dropouta=dropouta, bayes_ffn=True, bayes_attn=False)
+                )
+                pass
+            else:
+                self.layers.append(
+                    RelDecoderLayer(n_head, d_model, d_head, d_inner, dropoutf=dropoutf,
+                                    dropouta=dropouta, bayes_ffn=False, bayes_attn=False)
+                )
+                pass
+            pass
 
         self.out_layer = nn.Linear(d_model, n_token)
         if tie_weight:
@@ -361,7 +422,8 @@ class AWDTransformerXL(nn.Module):
 
     def _update_mems(self, hids, mems, qlen, mlen):
         # does not deal with None
-        if mems is None: return None
+        if mems is None:
+            return None
 
         # mems is not None
         assert len(hids) == len(mems), 'len(hids) != len(mems)'
@@ -376,15 +438,18 @@ class AWDTransformerXL(nn.Module):
             end_idx = mlen + max(0, qlen - 0 - self.ext_len)
             beg_idx = max(0, end_idx - self.mem_len)
             for i in range(len(hids)):
-
                 cat = torch.cat([mems[i], hids[i]], dim=0)
                 new_mems.append(cat[beg_idx:end_idx].detach())
 
         return new_mems
 
-    def forward(self, dec_inp, target, *mems, return_h=False):
-        # print("dec_inp.size(), target.size(): ", dec_inp.size(), target.size())
-        if not mems: mems = self.init_mems()
+    def forward(self, dec_inp, target, *mems, return_h=False, sentence_level=None, sent_lens=None, display=False):
+        # print("dec_inp, target: ", dec_inp.size(), target.size())
+        dec_inp = dec_inp[-target.size(0):]
+        # print("dec_inp", dec_inp.size())
+
+        if not mems:
+            mems = self.init_mems()
 
         qlen, bsz = dec_inp.size()
 
@@ -396,15 +461,35 @@ class AWDTransformerXL(nn.Module):
         mlen = mems[0].size(0) if mems is not None else 0
         klen = mlen + qlen
         dec_attn_mask = torch.triu(
-            word_emb.new_ones(qlen, klen), diagonal=1+mlen).bool()[:,:,None]
+            word_emb.new_ones(qlen, klen), diagonal=1 + mlen).bool()[:, :, None]
+        print("dec_attn_mask.size: ", dec_attn_mask[:, :, 0].size())
+        # print("dec_attn_mask: ", dec_attn_mask[:, :, 0])
+
+        if not self.training or sentence_level is True:
+            # len_q = dec_inp.size(0)
+            # pad_mask = dec_inp.t().eq(0)
+            # # print("pad_mask: ", pad_mask.size(), pad_mask)
+            # pad_mask = pad_mask.unsqueeze(1).expand(-1, len_q, -1)
+            # pad_mask = pad_mask.transpose(0, 2).transpose(0, 1)
+            # # print("pad_mask:", pad_mask.size())
+            # # print(pad_mask[:, :, 1])
+            pad_mask = None
+            pass
+        else:
+            pad_mask = None
+            pass
+        pass
 
         hids = []
 
         # relative pos embedding
-        pos_seq = torch.arange(klen, -1, -1.0, device=word_emb.device)
+        # print("klen: ", klen)
+        pos_seq = torch.arange(0, klen, 1.0, device=word_emb.device)
+        # print("pos_seq: ", pos_seq)
         if self.clamp_len > 0:
             pos_seq.clamp_(max=self.clamp_len)
         pos_emb = self.pos_emb(pos_seq)
+        # print("pos_emb: ", pos_emb.size())
 
         # initial inputs
         core_out = self.locked_drop_i(word_emb)
@@ -413,35 +498,35 @@ class AWDTransformerXL(nn.Module):
         # compute hids
         kl_loss = 0
         for i, layer in enumerate(self.layers):
+            # start_time = time.time()
             # save the input to each layer for memory
             hids.append(core_out)
 
             # current memory
             mems_i = mems[i] if mems is not None else None
 
-            core_out, kl = layer(core_out, pos_emb, dec_attn_mask=dec_attn_mask,
-                             mems=mems_i)
+            # print("core_out: ", core_out.size())
+            core_out, kl = layer(core_out, pos_emb, dec_attn_mask=dec_attn_mask, pad_mask=pad_mask, display=display)
             kl_loss += kl
-
             # apply dropouth, if it is not the last layer
             if i < len(self.layers) - 1:
                 core_out = self.locked_drop_h(core_out)
 
+            # end_time = time.time()
+            # print("decoder time once: ", end_time - start_time)
+
         # update memory
         new_mems = self._update_mems(hids, mems, mlen, qlen)
 
-        # print("core_out.size(): ", core_out.size(), -target.size(0))
         # compute loss
-        hidden = core_out[-target.size(0):]
+        hidden = core_out
         pred_hid = self.locked_drop_o(hidden)
-        # print("pred_hid.size(): ", pred_hid.size())
 
         logit = self.out_layer(pred_hid)
-        # print("logit.size(): ", logit.size())
         if hasattr(self, 'temperature'):
             logit = logit / self.temperature
         loss = -F.log_softmax(logit, dim=-1) \
-                 .gather(2, target.unsqueeze(2)).squeeze(2)
+            .gather(2, target.unsqueeze(2)).squeeze(2)
 
         ret = [loss]
 
@@ -453,7 +538,7 @@ class AWDTransformerXL(nn.Module):
         if return_h:
             ret = ret + [hidden]
         # print(kl_loss)
-        kl_loss = kl_loss / dec_inp.size(0) * dec_inp.size(1)
-        ret = ret + [kl_loss]
-        return ret
 
+        ret = ret + [kl_loss]
+
+        return ret
