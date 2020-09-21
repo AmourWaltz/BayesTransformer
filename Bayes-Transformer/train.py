@@ -17,7 +17,7 @@ parser.add_argument('--work_dir', default='TFM', type=str,
                     help='experiment directory.')
 parser.add_argument('--data', type=str, default='../TransformerLM/include/data',
                     help='location of the data corpus')
-parser.add_argument('--dataset', type=str, default='swbd',
+parser.add_argument('--dataset', type=str, default='ptb',
                     help='location of dataset uesd')
 parser.add_argument('--sentence-level', type=bool, default=True,
                     help='evaluating on sentence_level or segment_level for xl_net')
@@ -86,7 +86,7 @@ parser.add_argument('--beta', type=float, default=0.1,
 parser.add_argument('--wdecay', type=float, default=1.2e-6,
                     help='weight decay applied to all weights')
 
-parser.add_argument('--std_epochs', type=int, default=5,
+parser.add_argument('--std_epochs', type=int, default=10,
                     help='number of epochs with standard training')
 parser.add_argument('--ema_epochs', type=int, default=0,
                     help='number of epochs with ema of params')
@@ -99,7 +99,7 @@ parser.add_argument('--epoch_ema', action='store_true',
 parser.add_argument('--ema_lr_mult', type=float, default=0.5,
                     help='lr multiplier when switching to EMA.')
 
-parser.add_argument('--batch_size', type=int, default=20,
+parser.add_argument('--batch_size', type=int, default=10,
                     help='batch size')
 parser.add_argument('--bptt', type=int, default=70,
                     help='sequence length')
@@ -112,6 +112,8 @@ parser.add_argument('--seed', type=int, default=1111,
                     help='random seed')
 parser.add_argument('--cuda', action='store_true',
                     help='use CUDA')
+parser.add_argument('--devices', type=int, default=1,
+                    help='which GPU to use')
 parser.add_argument('--log-interval', type=int, default=200,
                     help='report interval')
 parser.add_argument('--save', type=str,  default='model.pt',
@@ -160,7 +162,7 @@ if torch.cuda.is_available():
     else:
         torch.cuda.manual_seed(args.seed)
 device = torch.device("cuda" if args.cuda else "cpu")
-
+torch.cuda.set_device(args.devices)
 
 ###############################################################################
 # Load data
@@ -181,12 +183,14 @@ test_batch_size = 1
 
 data_path = os.path.join(args.data, args.dataset)
 if args.sentence_level is False:
-    data_path = os.path.join(args.data, 'xl-net')
+    save_path = os.path.join(data_path, 'xl-net')
+else:
+    save_path = data_path
 pass
 
 fn = os.path.join(
-    data_path,
-    'corpus.{}.data'.format(hashlib.md5(data_path.encode()).hexdigest()))
+    save_path,
+    'corpus.{}.data'.format(hashlib.md5(save_path.encode()).hexdigest()))
 if os.path.exists(fn):
     logging('Loading cached dataset...')
     corpus = torch.load(fn)
@@ -198,7 +202,7 @@ else:
 # logging('Producing dataset...')
 # corpus = data.Corpus(args.data, args.data_version, eval_batch_size, test_batch_size)
 # torch.save(corpus, fn)
-
+# print(len(corpus.train_data), len(corpus.valid_data), len(corpus.test_data))
 
 train_data = batchify(corpus.train_data, args.batch_size, args)
 if args.sentence_level is False:
@@ -431,11 +435,14 @@ def train(data_display=False):
 
         # Forward
         # print(data, target)
-        ret = model(inputs, target, *mems, return_h=True, display=data_display)
+        ret = model(inputs.cuda(), target.cuda(), *mems, return_h=True, display=data_display)
         raw_loss, mems, last_hid, kl_loss = ret[0], ret[1:-2], ret[-2], ret[-1]
         raw_loss = raw_loss.mean()
         kl_loss = kl_loss / len(train_data)
         loss = raw_loss + kl_loss
+
+        if data_display is True:
+            data_display = False
 
         # Activiation Regularization
         if args.alpha:
@@ -482,6 +489,7 @@ def train(data_display=False):
             logging(log_str)
             total_loss = 0
             start_time = time.time()
+            # data_display = True
         #
         batch += 1
         i += seq_len

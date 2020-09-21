@@ -118,16 +118,21 @@ class BayesPositionwiseFF(nn.Module):
     def forward(self, inp, display=False):
         # positionwise feed-forward
         # print("inp.size(): ", inp.size())
-        self.weight1 = self.weight_mean1*1.
-        self.weight2 = self.weight_mean2*1.
+        weight1 = self.weight_mean1*1.
+        weight2 = self.weight_mean2*1.
         weight1_diff, weight2_diff = self.sample_weight_diff()
-        self.weight1 += weight1_diff
-        self.weight2 += weight2_diff
+        if display is True:
+            print("weight1, weight1_diff, weight2, weight2_diff:", weight1.mean().item(), weight1_diff.mean().item(), weight2.mean().item(), weight2_diff.mean().item())
+        weight1 += weight1_diff
+        weight2 += weight2_diff
+        # if display is True:
+        #     print("weight1, weight1_diff, weight2, weight2_diff:", weight1.mean().item(), weight1_diff.mean().item(), weight2.mean().item(), weight2_diff.mean().item())
+
         # print("weight1_size:", self.weight1.size())
         # print("weight2_size:", self.weight2.size())
-        layer1_out = F.linear(inp, self.weight1)
+        layer1_out = F.linear(inp, weight1)
         # print("layer1_out_size:", layer1_out.size())
-        layer2_out = F.linear(layer1_out, self.weight2)
+        layer2_out = F.linear(layer1_out, weight2)
         # print("layer2_out_size:", layer2_out.size())
 
         # residual connection + layer normalization
@@ -462,7 +467,7 @@ class AWDTransformerXL(nn.Module):
         klen = mlen + qlen
         dec_attn_mask = torch.triu(
             word_emb.new_ones(qlen, klen), diagonal=1 + mlen).bool()[:, :, None]
-        print("dec_attn_mask.size: ", dec_attn_mask[:, :, 0].size())
+        # print("dec_attn_mask.size: ", dec_attn_mask[:, :, 0].size())
         # print("dec_attn_mask: ", dec_attn_mask[:, :, 0])
 
         if not self.training or sentence_level is True:
@@ -523,6 +528,12 @@ class AWDTransformerXL(nn.Module):
         pred_hid = self.locked_drop_o(hidden)
 
         logit = self.out_layer(pred_hid)
+
+        # print("logit.size, target.size:", logit.size(), target.size())
+        # if not self.training and sentence_level is True:
+        #     logit = logit[:-1, :, :]
+        #     target = target[:-1, :]
+
         if hasattr(self, 'temperature'):
             logit = logit / self.temperature
         loss = -F.log_softmax(logit, dim=-1) \
