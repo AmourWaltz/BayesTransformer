@@ -1,15 +1,12 @@
-import functools
 import numpy as np
 import math
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+import torch.nn.functional as func
 
-from adaptive_softmax import AdaptiveLogSoftmax
 from embed_regularize import embedded_dropout
 from locked_dropout import LockedDropout
-from torch.nn.utils.rnn import pack_padded_sequence
 
 
 def _rel_shift(x, zero_triu=False):
@@ -48,8 +45,61 @@ class PositionalEmbedding(nn.Module):
             return pos_emb[:, None, :]
 
 
+class BayesEmbedding(nn.Module):
+    def __init__(self, num_embeddings, embedding_dim, padding_idx=None,
+                 max_norm=None, norm_type=2., scale_grad_by_freq=False,
+                 sparse=False, _weight=None):
+        super(BayesEmbedding, self).__init__()
+        self.num_embeddings = num_embeddings
+        self.embedding_dim = embedding_dim
+        if padding_idx is not None:
+            if padding_idx > 0:
+                assert padding_idx < self.num_embeddings, 'Padding_idx must be within num_embeddings'
+            elif padding_idx < 0:
+                assert padding_idx >= -self.num_embeddings, 'Padding_idx must be within num_embeddings'
+                padding_idx = self.num_embeddings + padding_idx
+        self.padding_idx = padding_idx
+        self.max_norm = max_norm
+        self.norm_type = norm_type
+        self.scale_grad_by_freq = scale_grad_by_freq
+        self.sparse = sparse
+        self.weight_mean = nn.Parameter(torch.Tensor(num_embeddings, embedding_dim), requires_grad=True)
+        self.weight_lgstd = nn.Parameter(torch.Tensor(num_embeddings, embedding_dim), requires_grad=True)
+        self.weight = torch.Tensor(num_embeddings, embedding_dim)
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        stde = 1. / math.sqrt(self.embedding_dim + 1)
+        self.weight_mean.data.uniform_(-stde, stde)
+        self.weight_lgstd.data.uniform_(2*np.log(stde), 1*np.log(stde))
+        if self.padding_idx is not None:
+            with torch.no_grad():
+                self.weight[self.padding_idx].fill_(0)
+
+    def sample_weight_diff(self):
+        if self.training:
+            weight_std = torch.exp(self.weight_lgstd)
+            epsilon = weight_std.new_zeros(*weight_std.size()).normal_()
+            weight_diff = epsilon * weight_std
+            return weight_diff
+        return 0
+
+    def kl_divergence(self):
+        kl = 0
+        theta_mean = self.weight_mean
+        theta_std = self.weight_lgstd
+        kl += torch.mean(theta_mean ** 2. - theta_std * 2. + torch.exp(theta_std * 2)) / 2.
+        return kl
+
+    def forward(self, inputs):
+        self.weight = self.weight_mean*1.
+        weight_diff = self.sample_weight_diff()
+        self.weight += weight_diff
+        return func.embedding(inputs, self.weight, self.padding_idx)
+
+
 class PositionwiseFF(nn.Module):
-    def __init__(self, d_model, d_inner, dropout):
+    def __init__(self, d_model, d_inner, dropout=0.0):
         super(PositionwiseFF, self).__init__()
 
         self.d_model = d_model
@@ -76,21 +126,20 @@ class PositionwiseFF(nn.Module):
 
 
 class BayesPositionwiseFF(nn.Module):
-    def __init__(self, d_model, d_inner, dropout):
+    def __init__(self, d_model, d_inner):
         super(BayesPositionwiseFF, self).__init__()
         self.d_model = d_model
         self.d_inner = d_inner
-        self.dropout = dropout
-        self.weight_mean1 = nn.Parameter(torch.rand(self.d_inner, self.d_model))
-        self.weight_mean2 = nn.Parameter(torch.rand(self.d_model, self.d_inner))
-        self.weight_std1 = nn.Parameter(torch.rand(self.d_inner, self.d_model))
-        self.weight_std2 = nn.Parameter(torch.rand(self.d_model, self.d_inner))
+        self.weight_mean1 = nn.Parameter(torch.rand(self.d_inner, self.d_model), requires_grad=True)
+        self.weight_mean2 = nn.Parameter(torch.rand(self.d_model, self.d_inner), requires_grad=True)
+        self.weight_std1 = nn.Parameter(torch.rand(self.d_inner, self.d_model), requires_grad=True)
+        self.weight_std2 = nn.Parameter(torch.rand(self.d_model, self.d_inner), requires_grad=True)
         self.reset_parameters()
         self.layer_norm = nn.LayerNorm(d_model)
 
     def reset_parameters(self):
-        stdm = 1. / math.sqrt(self.d_model+1)
-        stdi = 1. / math.sqrt(self.d_inner+1)
+        stdm = 1. / math.sqrt(self.d_model)
+        stdi = 1. / math.sqrt(self.d_inner)
         self.weight_mean1.data.uniform_(-stdm, stdm)
         self.weight_mean2.data.uniform_(-stdi, stdi)
         self.weight_std1.data.uniform_(2*np.log(stdm), 1*np.log(stdm))
@@ -122,17 +171,21 @@ class BayesPositionwiseFF(nn.Module):
         weight2 = self.weight_mean2*1.
         weight1_diff, weight2_diff = self.sample_weight_diff()
         if display is True:
-            print("weight1, weight1_diff, weight2, weight2_diff:", weight1.mean().item(), weight1_diff.mean().item(), weight2.mean().item(), weight2_diff.mean().item())
+            print("weight1, weight1_diff, weight2, weight2_diff:",
+                  weight1.mean().item(), weight1_diff.mean().item(),
+                  weight2.mean().item(), weight2_diff.mean().item())
         weight1 += weight1_diff
         weight2 += weight2_diff
         # if display is True:
-        #     print("weight1, weight1_diff, weight2, weight2_diff:", weight1.mean().item(), weight1_diff.mean().item(), weight2.mean().item(), weight2_diff.mean().item())
+        #     print("weight1, weight1_diff, weight2, weight2_diff:",
+        #           weight1.mean().item(), weight1_diff.mean().item(),
+        #           weight2.mean().item(), weight2_diff.mean().item())
 
         # print("weight1_size:", self.weight1.size())
         # print("weight2_size:", self.weight2.size())
-        layer1_out = F.linear(inp, weight1)
+        layer1_out = func.linear(inp, weight1)
         # print("layer1_out_size:", layer1_out.size())
-        layer2_out = F.linear(layer1_out, weight2)
+        layer2_out = func.linear(layer1_out, weight2)
         # print("layer2_out_size:", layer2_out.size())
 
         # residual connection + layer normalization
@@ -177,7 +230,7 @@ class MultiHeadAttn(nn.Module):
         head_v = head_v.view(h.size(0), h.size(1), self.n_head, self.d_head)
 
         # [qlen x klen x bsz x n_head]
-        attn_score = torch.einsum('ibnd,jbnd->ijbn', (head_q, head_k))
+        attn_score = torch.einsum('ibnd,jbnd->ijbn', [head_q, head_k])
         attn_score.mul_(self.scale)
         # print("attn_score.size: ", attn_score.size())
         # print("dec_attn_mask.size: ", attn_mask.size(), pad_mask.size())
@@ -205,12 +258,12 @@ class MultiHeadAttn(nn.Module):
         #     pass
 
         # [qlen x klen x bsz x n_head]
-        attn_prob = F.softmax(attn_score, dim=1)
+        attn_prob = func.softmax(attn_score, dim=1)
         attn_prob = self.drop(attn_prob)
 
         # [qlen x klen x bsz x n_head] + [klen x bsz x n_head x d_head]
         # -> [qlen x bsz x n_head x d_head]
-        attn_vec = torch.einsum('ijbn,jbnd->ibnd', (attn_prob, head_v))
+        attn_vec = torch.einsum('ijbn,jbnd->ibnd', [attn_prob, head_v])
         attn_vec = attn_vec.contiguous().view(
             attn_vec.size(0), attn_vec.size(1), self.n_head * self.d_head)
 
@@ -220,6 +273,138 @@ class MultiHeadAttn(nn.Module):
 
         # residual connection + layer normalization
         output = self.layer_norm(h + attn_out)
+
+        return output
+
+
+class BayesMultiHeadAttn(nn.Module):
+    def __init__(self, n_head, d_model, d_head):
+        super(BayesMultiHeadAttn, self).__init__()
+
+        self.n_head = n_head
+        self.d_model = d_model
+        self.d_head = d_head
+
+        self.query_mean = nn.Parameter(torch.rand(self.n_head * self.d_head, self.d_model), requires_grad=True)
+        self.key_mean = nn.Parameter(torch.rand(self.n_head * self.d_head, self.d_model), requires_grad=True)
+        self.value_mean = nn.Parameter(torch.rand(self.n_head * self.d_head, self.d_model), requires_grad=True)
+        self.query_std = nn.Parameter(torch.rand(self.n_head * self.d_head, self.d_model), requires_grad=True)
+        self.key_std = nn.Parameter(torch.rand(self.n_head * self.d_head, self.d_model), requires_grad=True)
+        self.value_std = nn.Parameter(torch.rand(self.n_head * self.d_head, self.d_model), requires_grad=True)
+
+        self.output_mean = nn.Parameter(torch.rand(self.d_model, self.n_head * self.d_head), requires_grad=True)
+        self.output_std = nn.Parameter(torch.rand(self.d_model, self.n_head * self.d_head), requires_grad=True)
+        self.reset_parameters()
+        self.layer_norm = nn.LayerNorm(d_model)
+
+        self.scale = 1 / (d_head ** 0.5)
+
+    def reset_parameters(self):
+        init_qkv = 1. / math.sqrt(self.d_model)
+        init_out = 1. / math.sqrt(self.n_head * self.d_head)
+
+        # Initial function. Given expected values. While mean~U(-u, u), std~U(1/w^2, 1/w)
+        self.query_mean.data.uniform_(-init_qkv, init_qkv)
+        self.query_std.data.uniform_(2*np.log(init_qkv), np.log(init_qkv))
+        self.key_mean.data.uniform_(-init_qkv, init_qkv)
+        self.key_std.data.uniform_(2*np.log(init_qkv), np.log(init_qkv))
+        self.value_mean.data.uniform_(-init_qkv, init_qkv)
+        self.value_std.data.uniform_(2*np.log(init_qkv), np.log(init_qkv))
+
+        self.output_mean.data.uniform_(-init_out, init_out)
+        self.output_std.data.uniform_(2*np.log(init_out), np.log(init_out))
+
+    def sample_weight_diff(self):
+        if self.training:
+            # Sampling function, from sample = mean + N(0, 1) * exp (lgstd)
+            # lgstd_list = [self.query_std, self.key_std, self.value_std, self.output_std]
+            # sample_list = []
+            # for lgstd in lgstd_list:
+            #     variance = torch.exp(lgstd)
+            #     epsilon = variance.new_zeros(*variance.size()).normal_()
+            #     sample = epsilon * variance
+            #     sample_list.append(sample)
+            #     pass
+            # pass
+            #
+            # query_sample = sample_list[0]
+            # key_sample = sample_list[1]
+            # value_sample = sample_list[2]
+            # output_sample = sample_list[3]
+
+            query_var = torch.exp(self.query_std)
+            epsilon = query_var.new_zeros(*query_var.size()).normal_()
+            query_sample = epsilon*query_var
+            key_var = torch.exp(self.key_std)
+            epsilon = key_var.new_zeros(*key_var.size()).normal_()
+            key_sample = epsilon*key_var
+            value_var = torch.exp(self.value_std)
+            epsilon = value_var.new_zeros(*value_var.size()).normal_()
+            value_sample = epsilon*value_var
+            output_var = torch.exp(self.output_std)
+            epsilon = output_var.new_zeros(*output_var.size()).normal_()
+            output_sample = epsilon*output_var
+
+            return query_sample, key_sample, value_sample, output_sample
+        return 0, 0, 0, 0
+
+    def kl_divergence(self):
+        kl = 0
+        theta_mean = torch.cat([self.query_mean, self.key_mean], -1)
+        theta_mean = torch.cat([theta_mean, self.value_mean], -1)
+        theta_mean = torch.cat([theta_mean, self.output_mean.t()], -1)
+        theta_std = torch.cat([self.query_std, self.key_std], -1)
+        theta_std = torch.cat([theta_std, self.value_std], -1)
+        theta_std = torch.cat([theta_std, self.output_std.t()], -1)
+        kl += torch.mean(theta_mean ** 2. - theta_std * 2. + torch.exp(theta_std * 2)) / 2.
+        return kl
+
+    def forward(self, dec_inp, attn_mask=None, pad_mask=None, mems=None):
+        # multihead attention
+        # [hlen x bsz x n_head x d_head]
+        # Get the weight for query, key and value
+        query_weight = self.query_mean * 1.
+        key_weight = self.key_mean * 1.
+        value_weight = self.value_mean * 1.
+        query_diff, key_diff, value_diff, output_diff = self.sample_weight_diff()
+        query_weight += query_diff
+        key_weight += key_diff
+        value_weight += value_diff
+
+        head_q = func.linear(dec_inp, query_weight)
+        head_k = func.linear(dec_inp, key_weight)
+        head_v = func.linear(dec_inp, value_weight)
+        head_q = head_q.view(dec_inp.size(0), dec_inp.size(1), self.n_head, self.d_head)
+        head_k = head_k.view(dec_inp.size(0), dec_inp.size(1), self.n_head, self.d_head)
+        head_v = head_v.view(dec_inp.size(0), dec_inp.size(1), self.n_head, self.d_head)
+
+        # [qlen x klen x bsz x n_head]
+        attn_score = torch.einsum('ibnd,jbnd->ijbn', [head_q, head_k])
+        attn_score.mul_(self.scale)
+        # print("attn_score.size: ", attn_score.size())
+        # print("dec_attn_mask.size: ", attn_mask.size(), pad_mask.size())
+
+        if attn_mask is not None and attn_mask.any().item():
+            if attn_mask.dim() == 2:
+                attn_score.masked_fill_(attn_mask[None, :, :, None], -float('inf'))
+            elif attn_mask.dim() == 3:
+                attn_score.masked_fill_(attn_mask[:, :, :, None], -float('inf'))
+
+        # [qlen x klen x bsz x n_head]
+        attn_prob = func.softmax(attn_score, dim=1)
+
+        # [qlen x klen x bsz x n_head] + [klen x bsz x n_head x d_head] -> [qlen x bsz x n_head x d_head]
+        attn_vec = torch.einsum('ijbn,jbnd->ibnd', [attn_prob, head_v])
+        attn_vec = attn_vec.contiguous().view(
+            attn_vec.size(0), attn_vec.size(1), self.n_head * self.d_head)
+
+        # linear projection
+        output_weight = self.value_mean * 1.
+        output_weight += output_diff
+        attn_out = func.linear(attn_vec, output_weight)
+
+        # residual connection + layer normalization
+        output = self.layer_norm(dec_inp + attn_out)
 
         return output
 
@@ -271,18 +456,18 @@ class RelMultiHeadAttn(MultiHeadAttn):
         # print("w_head_q + r_head_q[-1]: ", w_head_q.size(), r_head_q.size(), r_head_q[-1].size())
         rw_head_q = w_head_q + r_head_q[-1]
         # print("rw_head_q.size(): ", rw_head_q.size())
-        AC = torch.einsum('ibnd,jbnd->ijbn', (rw_head_q, w_head_k))
+        ac_rw_qk = torch.einsum('ibnd,jbnd->ijbn', [rw_head_q, w_head_k])
 
         rr_head_q = w_head_q + r_head_q[-1]
         # print("rr_head_q.size(), r_head_k.size(): ", rr_head_q.size(), r_head_k.size())
-        BD = torch.einsum('ibnd,jnd->ijbn', (rr_head_q, r_head_k))
+        bd_rr_qk = torch.einsum('ibnd,jnd->ijbn', [rr_head_q, r_head_k])
         # print("BD.size(): ", BD.size())
         # change [word_len, word_len + 1, batch_size, num_heads] to [word_len, word_len, batch_size, num_heads]
-        BD = _rel_shift(BD)
+        bd_rr_qk = _rel_shift(bd_rr_qk)
         # print("BD.size_shift(): ", BD.size())
 
         # [qlen x klen x bsz x n_head]
-        attn_score = AC + BD
+        attn_score = ac_rw_qk + bd_rr_qk
         # print(self.scale)
         attn_score.mul_(self.scale)
 
@@ -299,13 +484,13 @@ class RelMultiHeadAttn(MultiHeadAttn):
 
         # [qlen x klen x bsz x n_head]
         # print("attn_score.size(): ", attn_score.size())
-        attn_prob = F.softmax(attn_score, dim=1)
-        print("attn_prob.size(): ", attn_prob.size())
+        attn_prob = func.softmax(attn_score, dim=1)
+        # print("attn_prob.size(): ", attn_prob.size())
         attn_prob = self.drop(attn_prob)
         # attn_prob = self.locked_drop(attn_prob)
 
         # compute attention vector
-        attn_vec = torch.einsum('ijbn,jbnd->ibnd', (attn_prob, w_head_v))
+        attn_vec = torch.einsum('ijbn,jbnd->ibnd', [attn_prob, w_head_v])
 
         # [qlen x bsz x n_head x d_head]
         attn_vec = attn_vec.contiguous().view(
@@ -325,12 +510,17 @@ class RelDecoderLayer(nn.Module):
     def __init__(self, n_head, d_model, d_head, d_inner, dropoutf, dropouta, bayes_ffn=None, bayes_attn=None,
                  **kwargs):
         super(RelDecoderLayer, self).__init__()
-        self.dec_attn = MultiHeadAttn(n_head, d_model, d_head, dropouta,
-                                      **kwargs)
+        if bayes_attn is True:
+            self.dec_attn = BayesMultiHeadAttn(n_head, d_model, d_head, **kwargs)
+        else:
+            self.dec_attn = MultiHeadAttn(n_head, d_model, d_head, dropouta, **kwargs)
+        pass
+
         if bayes_ffn is True:
-            self.pos_ff = BayesPositionwiseFF(d_model, d_inner, dropoutf)
+            self.pos_ff = BayesPositionwiseFF(d_model, d_inner)
         else:
             self.pos_ff = PositionwiseFF(d_model, d_inner, dropoutf)
+        pass
 
     def forward(self, dec_inp, pos_emb, dec_attn_mask=None, pad_mask=None, mems=None, display=False):
         output = self.dec_attn(dec_inp, attn_mask=dec_attn_mask, pad_mask=pad_mask, mems=mems)
@@ -343,14 +533,20 @@ class AWDTransformerXL(nn.Module):
     def __init__(self, n_token, n_layer, n_head, d_model, d_head, d_inner,
                  dropoute, dropouti, dropouta, dropoutf, dropouth, dropouto,
                  tie_weight=True, tgt_len=None, ext_len=0, mem_len=0, clamp_len=-1,
-                 bayes_ffn=0, bayes_attn=0, bayes_embed=0):
+                 bayes_ffn=0, bayes_attn=0, bayes_embed=False):
         super(AWDTransformerXL, self).__init__()
         self.n_token = n_token
         self.d_model = d_model
         self.n_head = n_head
         self.d_head = d_head
+        self.bayes_embed = bayes_embed
 
-        self.word_emb = nn.Embedding(n_token, d_model)
+        if self.bayes_embed is True:
+            self.word_emb = BayesEmbedding(n_token, d_model)
+        else:
+            self.word_emb = nn.Embedding(n_token, d_model)
+        pass
+
         self.emb_scale = d_model ** 0.5
 
         self.dropoute = dropoute
@@ -398,9 +594,18 @@ class AWDTransformerXL(nn.Module):
                 pass
             pass
 
-        self.out_layer = nn.Linear(d_model, n_token)
-        if tie_weight:
-            self.out_layer.weight = self.word_emb.weight
+        if self.bayes_embed:
+            self.out_mean = nn.Parameter(torch.Tensor(n_token, d_model), requires_grad=True)
+            self.out_mean = self.word_emb.weight_mean
+            pass
+        else:
+            self.out_layer = nn.Linear(d_model, n_token)
+            if tie_weight:
+                self.out_layer.weight = self.word_emb.weight
+                pass
+            pass
+        pass
+        # self.out_layer = nn.Linear(d_model, n_token)
 
         self._create_params()
 
@@ -526,9 +731,14 @@ class AWDTransformerXL(nn.Module):
         # compute loss
         hidden = core_out
         pred_hid = self.locked_drop_o(hidden)
-
-        logit = self.out_layer(pred_hid)
-
+        if self.bayes_embed is True:
+            logit = func.linear(pred_hid, self.out_mean)
+            pass
+        else:
+            logit = self.out_layer(pred_hid)
+            pass
+        pass
+        # logit = self.out_layer(pred_hid)
         # print("logit.size, target.size:", logit.size(), target.size())
         # if not self.training and sentence_level is True:
         #     logit = logit[:-1, :, :]
@@ -536,7 +746,7 @@ class AWDTransformerXL(nn.Module):
 
         if hasattr(self, 'temperature'):
             logit = logit / self.temperature
-        loss = -F.log_softmax(logit, dim=-1) \
+        loss = -func.log_softmax(logit, dim=-1) \
             .gather(2, target.unsqueeze(2)).squeeze(2)
 
         ret = [loss]
@@ -550,6 +760,6 @@ class AWDTransformerXL(nn.Module):
             ret = ret + [hidden]
         # print(kl_loss)
 
-        ret = ret + [kl_loss]
+        ret = ret + [torch.tensor(kl_loss)]
 
         return ret

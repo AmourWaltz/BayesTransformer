@@ -131,7 +131,7 @@ parser.add_argument('--bayes_ffn', type=int, default=0,
                     help='number of bayesian ffn layers')
 parser.add_argument('--bayes_attn', type=int, default=0,
                     help='number of bayesian attn layers')
-parser.add_argument('--bayes_embed', type=bool, default=False,
+parser.add_argument('--bayes_embed', type=bool, default=True,
                     help='use bayes for embedding or not')
 
 
@@ -162,7 +162,8 @@ if torch.cuda.is_available():
     else:
         torch.cuda.manual_seed(args.seed)
 device = torch.device("cuda" if args.cuda else "cpu")
-torch.cuda.set_device(args.devices)
+if args.cuda:
+    torch.cuda.set_device(args.devices)
 
 ###############################################################################
 # Load data
@@ -188,19 +189,19 @@ else:
     save_path = data_path
 pass
 
-fn = os.path.join(
-    save_path,
-    'corpus.{}.data'.format(hashlib.md5(save_path.encode()).hexdigest()))
-if os.path.exists(fn):
-    logging('Loading cached dataset...')
-    corpus = torch.load(fn)
-else:
-    logging('Producing dataset...')
-    corpus = data.Corpus(args, data_path, eval_batch_size, test_batch_size)
-    torch.save(corpus, fn)
+# fn = os.path.join(
+#     save_path,
+#     'corpus.{}.data'.format(hashlib.md5(save_path.encode()).hexdigest()))
+# if os.path.exists(fn):
+#     logging('Loading cached dataset...')
+#     corpus = torch.load(fn)
+# else:
+#     logging('Producing dataset...')
+#     corpus = data.Corpus(args, data_path, eval_batch_size, test_batch_size)
+#     torch.save(corpus, fn)
 
-# logging('Producing dataset...')
-# corpus = data.Corpus(args.data, args.data_version, eval_batch_size, test_batch_size)
+logging('Producing dataset...')
+corpus = data.Corpus(args, data_path, eval_batch_size, test_batch_size)
 # torch.save(corpus, fn)
 # print(len(corpus.train_data), len(corpus.valid_data), len(corpus.test_data))
 
@@ -429,13 +430,17 @@ def train(data_display=False):
 
         model.train()
         # print(train_data.size(), seq_len)
-        inputs, target = get_batch(train_data, i, args, seq_len=seq_len)
+        inputs, targets = get_batch(train_data, i, args, seq_len=seq_len)
 
         optimizer.zero_grad()
 
+        if torch.cuda.is_available():
+            inputs = inputs.cuda()
+            targets = targets.cuda()
+
         # Forward
         # print(data, target)
-        ret = model(inputs.cuda(), target.cuda(), *mems, return_h=True, display=data_display)
+        ret = model(inputs, targets, *mems, return_h=True, display=data_display)
         raw_loss, mems, last_hid, kl_loss = ret[0], ret[1:-2], ret[-2], ret[-1]
         raw_loss = raw_loss.mean()
         kl_loss = kl_loss / len(train_data)
