@@ -191,10 +191,10 @@ class BayesPositionwiseFF(nn.Module):
         # residual connection + layer normalization
         output = self.layer_norm(inp + layer2_out)
 
-        kl = self.kl_divergence()
+        ff_kl = self.kl_divergence()
         # kl = 0
 
-        return output, kl
+        return output, ff_kl
 
 
 class MultiHeadAttn(nn.Module):
@@ -274,7 +274,7 @@ class MultiHeadAttn(nn.Module):
         # residual connection + layer normalization
         output = self.layer_norm(h + attn_out)
 
-        return output
+        return output, 0
 
 
 class BayesMultiHeadAttn(nn.Module):
@@ -405,8 +405,9 @@ class BayesMultiHeadAttn(nn.Module):
 
         # residual connection + layer normalization
         output = self.layer_norm(dec_inp + attn_out)
+        attn_kl = self.kl_divergence()
 
-        return output
+        return output, attn_kl
 
 
 class RelMultiHeadAttn(MultiHeadAttn):
@@ -523,8 +524,9 @@ class RelDecoderLayer(nn.Module):
         pass
 
     def forward(self, dec_inp, pos_emb, dec_attn_mask=None, pad_mask=None, mems=None, display=False):
-        output = self.dec_attn(dec_inp, attn_mask=dec_attn_mask, pad_mask=pad_mask, mems=mems)
-        output, kl = self.pos_ff(output, display)
+        output, kl_attn = self.dec_attn(dec_inp, attn_mask=dec_attn_mask, pad_mask=pad_mask, mems=mems)
+        output, kl_ff = self.pos_ff(output, display)
+        kl = kl_ff + kl_attn
 
         return output, kl
 
@@ -542,7 +544,7 @@ class AWDTransformerXL(nn.Module):
         self.bayes_embed = bayes_embed
 
         if self.bayes_embed is True:
-            self.word_emb = BayesEmbedding(n_token, d_model)
+            self.word_emb = BayesEmbedding(n_token, d_model).cuda()
         else:
             self.word_emb = nn.Embedding(n_token, d_model)
         pass
@@ -663,9 +665,12 @@ class AWDTransformerXL(nn.Module):
 
         qlen, bsz = dec_inp.size()
 
-        word_emb = embedded_dropout(
-            self.word_emb, dec_inp,
-            dropout=self.dropoute if self.training else 0)
+        if self.bayes_embed is True:
+            word_emb = self.word_emb(dec_inp)
+        else:
+            word_emb = embedded_dropout(self.word_emb, dec_inp, dropout=self.dropoute if self.training else 0)
+        pass
+
         word_emb.mul_(self.emb_scale)
 
         mlen = mems[0].size(0) if mems is not None else 0
@@ -760,6 +765,6 @@ class AWDTransformerXL(nn.Module):
             ret = ret + [hidden]
         # print(kl_loss)
 
-        ret = ret + [torch.tensor(kl_loss)]
+        ret = ret + [kl_loss]
 
         return ret
