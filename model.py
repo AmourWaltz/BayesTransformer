@@ -4,6 +4,7 @@ from __future__ import print_function
 
 import math
 import torch
+import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -152,7 +153,8 @@ class MultiheadAttention(nn.Module):
                 if list(attn_mask.size()) != [1, query.size(0), key.size(0)]:
                     raise RuntimeError('The size of the 2D attn_mask is not correct.')
             elif attn_mask.dim() == 3:
-                if list(attn_mask.size()) != [bsz * num_heads, query.size(0), key.size(0)]:
+                # XBY 9.30: num_heads to self.num_heads
+                if list(attn_mask.size()) != [bsz * self.num_heads, query.size(0), key.size(0)]:
                     raise RuntimeError('The size of the 3D attn_mask is not correct.')
             else:
                 raise RuntimeError("attn_mask's dimension {} is not supported".format(attn_mask.dim()))
@@ -210,7 +212,86 @@ class TransformerEncoderLayer(nn.Module):
         src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
         src = src + self.dropout2(src2)
         src = self.norm2(src)
-        return src
+
+        # XBY 9.30: 0 to align the outputs to BayesTransformer
+        return src, 0
+
+
+class BayesTransformerEncoderLayer(nn.Module):
+    """
+    XBY 9.30. 
+    """
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1):
+        super(BayesTransformerEncoderLayer, self).__init__()
+        self.d_model = d_model
+        self.dim_ff = dim_feedforward
+        self.self_attn = MultiheadAttention(d_model, nhead, dropout=dropout)
+        # Each weight under Gaussian Distribution is determined by two parameters, mean and variance.
+        # self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.weight_mean1 = nn.Parameter(torch.rand(self.dim_ff, self.d_model), requires_grad=True)
+        self.weight_mean2 = nn.Parameter(torch.rand(self.d_model, self.dim_ff), requires_grad=True)
+        self.dropout = nn.Dropout(dropout)       
+        # self.linear2 = nn.Linear(dim_feedforward, d_model)
+        self.weight_std1 = nn.Parameter(torch.rand(self.dim_ff, self.d_model), requires_grad=True)
+        self.weight_std2 = nn.Parameter(torch.rand(self.d_model, self.dim_ff), requires_grad=True)
+
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+
+        self.activation = nn.GELU()
+
+    def reset_parameters(self):
+        stdm = 1. / math.sqrt(self.d_model)
+        stdi = 1. / math.sqrt(self.dim_ff)
+        self.weight_mean1.data.uniform_(-stdm, stdm)
+        self.weight_mean2.data.uniform_(-stdi, stdi)
+        # Note that variances are calculated by log.
+        self.weight_std1.data.uniform_(2*np.log(stdm), 1*np.log(stdm))
+        self.weight_std2.data.uniform_(2*np.log(stdi), 1*np.log(stdi))
+
+    def sample_weight_diff(self):
+        if self.training:
+            # Sampling process, sample_value = mean + epsilon * variance, where epsilon is sampled from N(0, 1).
+            weight_lgstd_1 = torch.exp(self.weight_std1)
+            epsilon = weight_lgstd_1.new_zeros(*weight_lgstd_1.size()).normal_()
+            weight_diff_1 = epsilon*weight_lgstd_1
+            weight_lgstd_2 = torch.exp(self.weight_std2)
+            epsilon = weight_lgstd_2.new_zeros(*weight_lgstd_2.size()).normal_()
+            weight_diff_2 = epsilon*weight_lgstd_2
+            return weight_diff_1, weight_diff_2
+        return 0, 0
+
+    def kl_divergence(self):
+        kl = 0
+        theta_mean = torch.cat([self.weight_mean1, self.weight_mean2.t()], -1)
+        theta_std = torch.cat([self.weight_std1, self.weight_std2.t()], -1)
+        kl += torch.mean(theta_mean ** 2. - theta_std * 2. + torch.exp(theta_std * 2)) / 2.
+        # kl += torch.mean(theta_mean ** 2. + theta_std ** 2 + 2 * torch.log(theta_std)) / 2.
+        return kl
+
+    def forward(self, src, src_mask=None):
+        src2 = self.self_attn(src, src, src, attn_mask=src_mask)[0]
+        src = src + self.dropout1(src2)
+        src = self.norm1(src)
+        # Using Gaussian sampling to add the variance.
+        # src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
+        weight1 = self.weight_mean1*1.
+        weight2 = self.weight_mean2*1.
+        weight1_diff, weight2_diff = self.sample_weight_diff()
+        weight1 += weight1_diff
+        weight2 += weight2_diff
+
+        src1 = F.linear(src, weight1)
+        src2 = F.linear(self.activation(src1), weight2)
+        ff_kl = self.kl_divergence()
+
+        src = src + self.dropout2(src2)
+        src = self.norm2(src)
+
+        return src, ff_kl
+
 
 class TransformerModel(nn.Module):
     """Container module with an encoder, a transformer module, and a decoder."""
@@ -226,7 +307,11 @@ class TransformerModel(nn.Module):
         self.src_mask = None
         self.pos_encoder = PositionalEncoding(ninp, dropout)
         self.transformerlayers = nn.ModuleList()
-        for i in range(nlayers):
+
+        # XBY 9.30: Change the first Transformer layer followed by embedding to Bayesian FFN.
+        self.transformerlayers.append(BayesTransformerEncoderLayer(ninp, nhead, nhid, dropout))
+
+        for i in range(nlayers - 1):
             self.transformerlayers.append(
                     TransformerEncoderLayer(ninp, nhead, nhid, dropout)
                 )
@@ -267,8 +352,12 @@ class TransformerModel(nn.Module):
         src = self.pos_encoder(src)
         # output = self.transformerlayers(src, self.src_mask)
         output = src 
+
+        # XBY 9.30: kl_loss is used to calculate total kl_loss
+        kl_loss = 0
         for mod in self.transformerlayers:
-            output = mod(output, src_mask=self.src_mask)
+            output, kl = mod(output, src_mask=self.src_mask)
+            kl_loss += kl
 
         output = self.decoder(output)
         return output
